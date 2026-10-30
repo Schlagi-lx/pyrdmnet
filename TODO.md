@@ -27,4 +27,4 @@
 
 ## Afterwards
 
-- [ ] 13. Switch GelMatch to 0.5 – only after the items above are done; guide: [docs/MIGRATING_TO_0.5.md](docs/MIGRATING_TO_0.5.md)
+- [ ] 13. Integrate pyrdmnet 0.5 into GelMatch (not using it yet) – only after the items above are done; guide: [docs/MIGRATING_TO_0.5.md](docs/MIGRATING_TO_0.5.md)

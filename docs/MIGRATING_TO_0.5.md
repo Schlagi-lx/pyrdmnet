@@ -1,10 +1,12 @@
 # Migrating from pyrdmnet 0.4 to 0.5
 
-Handover for projects that embed pyrdmnet 0.4 – in particular **GelMatch**, which uses pyrdmnet through
-`pyrdmnet.fassade` (now `pyrdmnet.facade`).
+Handover for code written against the original German version of this module (pyrdmnet 0.4) – in particular
+**GelMatch**, where the module was originally developed.
 
-**Planned timing for GelMatch:** switch to 0.5 only after the open items of [TODO.md](../TODO.md) in this repository
-are done. Until then GelMatch stays on 0.4 (pin it, see step 1).
+**GelMatch:** it does not use pyrdmnet as a dependency yet. The plan is to integrate pyrdmnet 0.5 there only after the
+open items of [TODO.md](../TODO.md) in this repository are done – directly in its English form, not via 0.4. The
+tables below map the German names that GelMatch code (or code copied from the original module) may still use. The
+facade quick reference is the usual entry point (`pyrdmnet.facade`, formerly `pyrdmnet.fassade`).
 
 ## What changed
 
@@ -24,11 +26,11 @@ but **every German name is gone and there are no compatibility aliases**:
 
 ## Steps
 
-1. **Pin the version while waiting.** In GelMatch, depend on `pyrdmnet==0.4.1` (or the 0.4 commit) until the
-   switch, so an update of this repository does not break GelMatch unplanned.
-2. **Back up the databases.** The first time pyrdmnet 0.5 opens a 0.4 database (`RdmStore`, `RdmConfig.db`), it
-   migrates it to schema 2 in place. The migration is one-way: **0.4 cannot open a migrated database.** Copy every
-   SQLite file that contains `rdm_*` tables before the first run with 0.5.
+1. **Add pyrdmnet 0.5 as a dependency** (e.g. `pip install git+https://github.com/Schlagi-lx/pyrdmnet@<tag or commit>`),
+   pinned to a tag or commit so later changes in this repository arrive only when wanted.
+2. **Back up existing databases.** If a database already contains `rdm_*` tables written by the original German
+   module, pyrdmnet 0.5 migrates it to schema 2 in place the first time it is opened (`RdmStore`, `RdmConfig.db`).
+   The migration is one-way: **the German version cannot open a migrated database.** Copy such files first.
 3. **Update the imports** using the module table below.
 4. **Rename the API calls.** Start with the facade (quick reference below), then the less common names from the
    full tables. Searching GelMatch for `pyrdmnet`, `RdmModul`, `RdmKonfig`, `EinstellungsErwartung` and `.fassade`

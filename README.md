@@ -6,7 +6,7 @@ pyrdmnet discovers RDM devices behind RDMnet gateways, reads device info, person
 DMX personality and start address under strict safeguards. It runs standalone and can be embedded in other programs
 through a synchronous interface.
 
-> **Upgrading from 0.4?** Version 0.5 is a breaking change: all names (modules, classes, functions, CLI commands and
+> **Coming from 0.4 (German names)?** Version 0.5 is a breaking change: all names (modules, classes, functions, CLI commands and
 > options, database tables and JSON keys) are now English. See [CHANGELOG.md](CHANGELOG.md) and the step-by-step
 > guide [docs/MIGRATING_TO_0.5.md](docs/MIGRATING_TO_0.5.md). Existing SQLite databases are migrated automatically
 > when opened (back them up first – the migration is one-way).
