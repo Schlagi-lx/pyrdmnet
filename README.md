@@ -15,7 +15,7 @@ through a synchronous interface.
 
 | | |
 |---|---|
-| Software tests | 228/228 passing on Linux, macOS and Windows (Python 3.10–3.13, standard library only) |
+| Software tests | 232/232 passing on Linux, macOS and Windows (Python 3.10–3.13, standard library only) |
 | Real-world test | with an **LSS MasterPort 2** (firmware 2.13) as RDMnet gateway and an **ETC ColorSource PAR**: broker discovery via mDNS, connection, finding devices, reading, setting mode/start address and reading back (tested with 0.4) |
 | Other gateways/devices | not tested – feedback welcome |
 
@@ -98,6 +98,7 @@ Or install as a package: `pip install .` (optionally with mDNS via zeroconf: `pi
 | `simulator` | connect a simulated RDMnet device to a broker |
 | `read` | find and read all devices on the broker (read only) |
 | `livetest` | test with a real gateway, read only |
+| `livetest --checks all` | additionally `TCP_COMMS_STATUS`, two controllers at once, LLRP (read only), broker restart |
 | `writetest` | set mode/start address on a real device, verify and restore (with on-site confirmation) |
 | `llrp` | find components via LLRP (no broker needed); set with `--uid` and `--scope`/`--broker`/`--domain` |
 | `brokers` | list the brokers announced via mDNS for a scope; warns if there is more than one |

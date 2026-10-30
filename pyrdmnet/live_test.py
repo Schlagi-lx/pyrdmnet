@@ -9,7 +9,12 @@ Flow (read-only, no RDM SET):
    because RDM discovery on the gateway takes time)
 4. Read out every gateway and every fixture, read all sensors
 5. Optional: settings check against expected mode/address/universe (display only)
-6. Store everything in a result folder: report, JSON, SQLite,
+6. Optional additional checks (``LiveConfig.checks``, CLI ``--checks``), all without RDM SET:
+   * ``comms``: TCP_COMMS_STATUS of every gateway (E1.33 7.6.3)
+   * ``controllers``: two controllers at once on one fixture (fair queuing, 9.2.10)
+   * ``llrp``: find the gateways via LLRP and read scope / search domain (section 5)
+   * ``restart``: restart the broker and measure how fast the gateways reconnect (6.2.5)
+7. Store everything in a result folder: report, JSON, SQLite,
    broker events and packet capture (for troubleshooting)
 """
 
@@ -131,6 +136,14 @@ class LiveConfig:
     mdns_check_s: float = 3.0  # search for other brokers on the scope before registering (E1.33 9.1.4)
     dnssd: bool = True
     expected: A.ExpectedSetting | None = None
+    checks: tuple[str, ...] = ()  # additional checks, see ALL_CHECKS
+    restart_wait_s: float = 60.0  # restart check: how long to wait for the gateways to come back
+    restart_pause_s: float = 2.0  # restart check: broker down for this long
+    llrp_network: object | None = None  # llrp check: LlrpNetwork (default: multicast on the adapter ``host``)
+
+
+ALL_CHECKS = ("comms", "controllers", "llrp", "restart")
+DEFAULT_CHECKS = ("comms", "controllers")  # read-only and without interruption
 
 
 def _now() -> str:
@@ -149,16 +162,17 @@ class LiveTest:
         self.folder = Path(k.folder) / f"{self.folder_prefix}_{stamp}"
         self.result: dict = {"version": __version__, "start_utc": _now(), "host": k.host, "port": k.port,
                                "scope": k.scope, "system": platform.platform(), "python": platform.python_version(),
-                               "gateways": [], "devices": [], "error": [], "hints": []}
+                               "gateways": [], "devices": [], "checks": {}, "error": [], "hints": []}
+        self.broker: RdmnetBroker | None = None
+        self._announcer = None
+        self._addresses: list[DeviceAddress] = []
 
     # ----------------------------------------------------------------- Flow
     async def run(self) -> dict:
         self.folder.mkdir(parents=True, exist_ok=True)
         if not ip_is_local(self.k.host):
             return self._abort(f"IP {self.k.host} does not belong to any network adapter of this computer")
-        broker = RdmnetBroker(BrokerConfig(host=self.k.host, port=self.k.port, scope=self.k.scope,
-                                           event_file=self.folder / "broker_events.jsonl",
-                                           capture_file=self.folder / "packet_capture.jsonl"))
+        broker = self.broker = RdmnetBroker(self._broker_config(self.k.port))
         try:
             await broker.start()
         except OSError as f:
@@ -168,7 +182,7 @@ class LiveTest:
         try:
             self.p(f"\nBroker running: {self.k.host}:{broker.port}, scope \"{self.k.scope}\", UID {broker.config.uid}")
             if self.k.dnssd:
-                announcer = await self._announce(broker)
+                announcer = self._announcer = await self._announce(broker)
             reg = announcer.registration if announcer else None
             self.result["mdns"] = {"active": reg is not None, "method": reg.method if reg else None,
                                    "name": reg.name if reg else None,
@@ -187,11 +201,19 @@ class LiveTest:
                 self._diagnostic_hints(broker)
                 return self._finish(broker)
             await self._read_devices(broker)
-            return self._finish(broker)
+            if self.k.checks:
+                await self._additional_checks()
+            return self._finish(self.broker)
         finally:
             if announcer:
                 await announcer.stop()
-            await broker.stop()
+            await self.broker.stop()
+
+    def _broker_config(self, port: int, previous: RdmnetBroker | None = None) -> BrokerConfig:
+        same = {"cid": previous.config.cid, "uid": previous.config.uid} if previous else {}  # restart: same identity
+        return BrokerConfig(host=self.k.host, port=port, scope=self.k.scope, **same,
+                            event_file=self.folder / "broker_events.jsonl",
+                            capture_file=self.folder / "packet_capture.jsonl")
 
     async def _announce(self, broker: RdmnetBroker):
         """Check the scope for other brokers, then register via mDNS (E1.33 9.1.4)."""
@@ -263,7 +285,7 @@ class LiveTest:
                 if gp.unavailable:
                     self.p("  unavailable: " + ", ".join(f"{k} ({v})" for k, v in gp.unavailable.items()))
                 await self._show_ports(reader, e.uid, gp.supported_pids)
-            addresses = await self._find_responders(c, reader)
+            addresses = self._addresses = await self._find_responders(c, reader)
             for dmx_addr in addresses:  # endpoint 0 = native RDMnet device without ports
                 await self._device(reader, store, dmx_addr)
         finally:
@@ -348,6 +370,149 @@ class LiveTest:
                 self.p(f"     - {x}")
         self.result["devices"].append(entry)
 
+    # ----------------------------------------------------------------- Additional checks
+    async def _additional_checks(self) -> None:
+        self.p("\nAdditional checks: " + ", ".join(self.k.checks))
+        for name in ALL_CHECKS:  # fixed order: the disruptive restart comes last
+            if name not in self.k.checks:
+                continue
+            try:
+                result = await getattr(self, f"_check_{name}")()
+            except Exception as f:  # a check must not end the live test
+                result = {"status": "failed", "error": repr(f)}
+            self.result["checks"][name] = result
+            self.p(f"  -> {name}: {result['status'].upper()}")
+            if result["status"] == "failed":
+                self._hint(f"Check {name} failed: {result.get('error') or result}")
+
+    async def _controller(self) -> RdmnetController:
+        c = RdmnetController()
+        await c.connect(self.k.host, self.broker.port, timeout_s=self.k.rdm_timeout_s)
+        await c.client_list()
+        return c
+
+    async def _check_comms(self) -> dict:
+        """TCP_COMMS_STATUS (E1.33 7.6.3) of every gateway: required for devices."""
+        c = await self._controller()
+        gateways = {}
+        try:
+            for e in c.devices():
+                try:
+                    entries = await c.read_tcp_comms_status(e.uid, timeout_s=self.k.rdm_timeout_s)
+                    gateways[str(e.uid)] = [{"scope": x.scope, "broker": x.broker_address,
+                                             "unhealthy_events": x.unhealthy_events} for x in entries]
+                    for x in entries:
+                        self.p(f"  {e.uid}: scope \"{x.scope}\", broker {x.broker_address}, "
+                               f"unhealthy TCP events {x.unhealthy_events}")
+                except RdmError as f:
+                    gateways[str(e.uid)] = {"error": str(f)}
+                    self.p(f"  {e.uid}: TCP_COMMS_STATUS not readable: {f}")
+        finally:
+            await c.disconnect()
+        ok = gateways and all(isinstance(v, list) for v in gateways.values())
+        return {"status": "ok" if ok else "not supported" if gateways else "failed", "gateways": gateways}
+
+    async def _check_controllers(self, busy: int = 20, quiet: int = 5) -> dict:
+        """Two controllers at once (9.2.10): A sends many requests, B a few afterwards; B must not wait for all
+        of A's. The target is the first fixture (RDM on the DMX line is the bottleneck), else a gateway."""
+        if self._addresses:
+            a = self._addresses[0]
+            target = dict(rpt_dest=a.rpt_uid, endpoint=a.endpoint, rdm_dest=a.rdm_uid)
+        else:
+            gateways = [g["rdm_uid"] for g in self.result["gateways"]]
+            if not gateways:
+                return {"status": "skipped", "reason": "no gateway"}
+            from .rdm import Uid
+            target = dict(rpt_dest=Uid.from_text(gateways[0]))
+        ca, cb = await self._controller(), await self._controller()
+        done_a = 0
+        errors: list[str] = []
+        timeout = max(self.k.rdm_timeout_s, 2.0) * 4
+
+        async def get(c):
+            nonlocal done_a
+            try:
+                await c.rdm_get(pid=C.PID_DEVICE_INFO, timeout_s=timeout, **target)
+                if c is ca:
+                    done_a += 1
+            except RdmError as f:
+                errors.append(f"{'A' if c is ca else 'B'}: {f}")
+        try:
+            start = time.monotonic()
+            busy_tasks = [asyncio.create_task(get(ca)) for _ in range(busy)]
+            await asyncio.sleep(0.05)
+            await asyncio.gather(*(get(cb) for _ in range(quiet)))
+            quiet_s, answered_a = time.monotonic() - start, done_a
+            await asyncio.gather(*busy_tasks)
+            total_s = time.monotonic() - start
+        finally:
+            await ca.disconnect()
+            await cb.disconnect()
+        self.p(f"  target {target['rpt_dest']} endpoint {target.get('endpoint', 0)}: A {busy} requests, "
+               f"B {quiet} requests; B done after {quiet_s:.2f} s with {answered_a} of A's answered, "
+               f"all done after {total_s:.2f} s, {len(errors)} error(s)")
+        fair = answered_a < busy
+        return {"status": "ok" if fair and not errors else "failed", "target": str(target["rpt_dest"]),
+                "endpoint": target.get("endpoint", 0), "busy_requests": busy, "quiet_requests": quiet,
+                "quiet_done_s": round(quiet_s, 3), "busy_answered_when_quiet_done": answered_a,
+                "total_s": round(total_s, 3), "errors": errors[:10],
+                "requests_per_s": round((busy + quiet - len(errors)) / total_s, 1) if total_s else None}
+
+    async def _check_llrp(self) -> dict:
+        """Find the gateways via LLRP (also connected ones) and read scope and search domain (read only)."""
+        from .llrp import LlrpManager, LlrpNetwork
+        rdmnet = {g["rdm_uid"] for g in self.result["gateways"]}
+        found = []
+        async with LlrpManager(self.k.llrp_network or LlrpNetwork(adapter=self.k.host)) as m:
+            self.p(f"  LLRP via {' + '.join(m.families)}")
+            for z in await m.discover(filter=0):
+                entry = {"uid": str(z.uid), "cid": str(z.cid), "type": z.type_text, "address": z.address,
+                         "hardware": z.hardware_text, "rdmnet_gateway": str(z.uid) in rdmnet}
+                try:
+                    cs = await m.read_scope(z)
+                    entry.update(scope=cs.scope, static_broker=cs.static_address,
+                                 search_domain=await m.read_search_domain(z))
+                except RdmError as f:
+                    entry["error"] = str(f)
+                found.append(entry)
+                self.p(f"  {z.uid} {z.type_text} {z.address}: scope \"{entry.get('scope', '?')}\", "
+                       f"broker {entry.get('static_broker') or 'via mDNS'}, domain {entry.get('search_domain', '?')}"
+                       + (f", ERROR {entry['error']}" if "error" in entry else ""))
+            families = m.families
+        missing = sorted(rdmnet - {e["uid"] for e in found})
+        for uid in missing:
+            self.p(f"  {uid}: not found via LLRP")
+        status = "ok" if found and not missing and not any("error" in e for e in found) else \
+            "not supported" if not found else "failed"
+        return {"status": status, "families": families, "targets": found, "missing": missing}
+
+    async def _check_restart(self) -> dict:
+        """Restart the broker and measure how fast every gateway reconnects (E1.33 6.2.5)."""
+        before = {c["cid"]: c["uid"] for c in self.broker.status()["clients"] if c["type"] == "Device"}
+        port = self.broker.port
+        self.p(f"  stopping the broker for {self.k.restart_pause_s:g} s ({len(before)} gateway(s) connected)")
+        old = self.broker
+        await old.stop()
+        await asyncio.sleep(self.k.restart_pause_s)
+        self.broker = RdmnetBroker(self._broker_config(port, old))
+        await self.broker.start()
+        if self._announcer is not None:
+            self._announcer.broker = self.broker
+        start = time.monotonic()
+        back: dict[str, float] = {}
+        while time.monotonic() - start < self.k.restart_wait_s and len(back) < len(before):
+            for c in self.broker.status()["clients"]:
+                if c["cid"] in before and c["cid"] not in back:
+                    back[c["cid"]] = round(time.monotonic() - start, 2)
+                    self.p(f"  {c['uid']} back after {back[c['cid']]:.1f} s")
+            await asyncio.sleep(self.k.poll_s)
+        gateways = [{"cid": cid, "uid_before": uid, "reconnect_s": back.get(cid)} for cid, uid in before.items()]
+        for g in gateways:
+            if g["reconnect_s"] is None:
+                self.p(f"  {g['uid_before']} NOT back within {self.k.restart_wait_s:g} s")
+        return {"status": "ok" if before and len(back) == len(before) else "failed", "gateways": gateways,
+                "pause_s": self.k.restart_pause_s}
+
     # ----------------------------------------------------------------- Completion
     def _hint(self, text: str) -> None:
         self.result["hints"].append(text)
@@ -425,6 +590,12 @@ class LiveTest:
             if e.get("check"):
                 z.append(f"- Settings check: {e['check']['status']}")
             z.append("")
+        if self.result["checks"]:
+            z += ["## Additional checks", ""]
+            for name, r in self.result["checks"].items():
+                z.append(f"### {name}: {r['status']}")
+                z += ["```", json.dumps({k: v for k, v in r.items() if k != "status"}, ensure_ascii=False,
+                                        indent=2), "```", ""]
         if self.result["error"] or self.result["hints"]:
             z += ["## Errors and hints", ""] + [f"- ERROR: {x}" for x in self.result["error"]] \
                  + [f"- {x}" for x in self.result["hints"]]
