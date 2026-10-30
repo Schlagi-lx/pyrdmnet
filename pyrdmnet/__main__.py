@@ -7,6 +7,7 @@ Commands:
   livetest   live test with a real gateway (e.g. LSS MasterPort), read only
   writetest  set mode/start address on a real fixture, verify and restore
   llrp       find RDMnet components without a broker (LLRP); set scope/broker address
+  brokers    list the brokers announced via mDNS for a scope (warns if there is more than one)
   demo       complete offline run: broker + simulator + readout +
              settings check + apply + 3 accompanied measurements (all SIMULATION)
 """
@@ -40,16 +41,19 @@ async def _broker(args) -> None:
     b = RdmnetBroker(BrokerConfig(host=args.host, port=args.port, scope=args.scope, llrp=args.llrp,
                                   event_file=Path(args.log) if args.log else None))
     await b.start()
-    reg = None
-    if args.dnssd:
-        from .dnssd import DnssdRegistration
-        reg = DnssdRegistration(args.scope, b.config.cid, b.config.uid, args.host, b.port)
+    announcer = None
     print(f"Broker running on {args.host}:{b.port}, scope \"{args.scope}\", UID {b.config.uid}. Ctrl+C to quit.")
+    if args.dnssd:
+        from .dnssd import BrokerAnnouncer
+        announcer = BrokerAnnouncer(b, args.host, on_message=lambda text: print(f"WARNING: {text}"))
+        await announcer.start()
+        if not announcer.standby:
+            print(f"Registered via mDNS as \"{announcer.registration.name}\" ({announcer.registration.method}).")
     try:
         await asyncio.Event().wait()
     finally:
-        if reg:
-            reg.stop()
+        if announcer:
+            await announcer.stop()
         await b.stop()
 
 
@@ -198,6 +202,26 @@ async def _llrp(args) -> int:
     return 0
 
 
+def _brokers(args) -> int:
+    from .dnssd import find_brokers
+    print(f"Searching for brokers on scope \"{args.scope}\" via mDNS ({args.time:g} s) ...")
+    try:
+        found = find_brokers(args.scope, args.time)
+    except RuntimeError as error:
+        print(f"ERROR: {error}")
+        return 2
+    for r in found:
+        print(f"  {r.describe()}")
+    if not found:
+        print("No broker found on this scope.")
+        return 1
+    if len(found) > 1:  # E1.33 7.4.3 (controllers) / 8.2.1 (EPT clients): alert about more than one broker
+        print(f"WARNING: {len(found)} brokers on scope \"{args.scope}\" - configuration error, clients may "
+              "connect to any of them. Keep exactly one broker per scope.")
+        return 1
+    return 0
+
+
 def _demo(args) -> int:
     db = Path(args.db)
     if db.exists() and not args.keep:
@@ -323,6 +347,10 @@ def main(argv: list[str] | None = None) -> int:
     ll.add_argument("--ttl", type=int, default=1)
     ll.add_argument("--json", help="save the result as JSON")
 
+    br = sub.add_parser("brokers", help="list brokers on a scope via mDNS (warns about more than one)")
+    br.add_argument("--scope", default=C.E133_DEFAULT_SCOPE)
+    br.add_argument("--time", type=float, default=3.0, help="search time in s")
+
     d = sub.add_parser("demo", help="offline demo")
     d.add_argument("--db", default="pyrdmnet_demo.sqlite")
     d.add_argument("--keep", action="store_true", help="keep using an existing demo database")
@@ -343,6 +371,8 @@ def main(argv: list[str] | None = None) -> int:
             return _livetest(args)
         elif args.command == "llrp":
             return asyncio.run(_llrp(args))
+        elif args.command == "brokers":
+            return _brokers(args)
         elif args.command == "demo":
             return _demo(args)
     except KeyboardInterrupt:

@@ -7,6 +7,11 @@
   EPT data. Blocks with PDU inheritance (e.g. one message to several CIDs, Appendix D.9) are split per destination
   and forwarded complete; unknown vectors and CIDs are answered with EPT status messages. Sender CIDs are checked.
 - New module `ept.py` with EPT encoding and `EptClient`.
+- One broker per scope (E1.33 9.1.4): `BrokerAnnouncer` looks for other brokers on the scope before registering via
+  mDNS, keeps the broker in STANDBY while there is one (re-checks every 15 s) and warns when another broker appears
+  later (check every 60 s). Used by `broker --dnssd`, `RdmConfig.dnssd` and the live test. `BROKER_STATUS` reports
+  ACTIVE/STANDBY; SET BROKER_STATUS is answered with NACK ACTION_NOT_SUPPORTED (7.6.4).
+- `find_brokers()` / `conflicting_brokers()` in `dnssd.py` (dns-sd or zeroconf) and the CLI command `brokers`.
 - Windows support: tests run on Windows in CI; adapter list via `ipconfig` (Windows) and `ip` (Linux without
   `ifconfig`); `dns-sd` started via its resolved path; firewall hints per platform; README section for Windows.
 - Pauses of the lab flows are configurable, defaults unchanged: `LiveConfig.settle_s`, `poll_s`, `search_retry_s`,

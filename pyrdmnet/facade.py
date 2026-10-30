@@ -120,9 +120,10 @@ class RdmModule:
                 event_file=k.event_file))
             await self.broker.start()
             port = self.broker.port
-            if k.dnssd:
-                from .dnssd import DnssdRegistration
-                self._dnssd = DnssdRegistration(k.scope, self.broker.config.cid, k.broker_uid, k.broker_host, port)
+            if k.dnssd:  # E1.33 9.1.4: STANDBY instead of registering while another broker holds the scope
+                from .dnssd import BrokerAnnouncer
+                self._dnssd = BrokerAnnouncer(self.broker, k.broker_host, on_message=log.warning)
+                await self._dnssd.start()
         self.port = port
         await self._connect_controller()
 
@@ -165,7 +166,7 @@ class RdmModule:
         if self.controller:
             await self.controller.disconnect()
         if self._dnssd:
-            self._dnssd.stop()
+            await self._dnssd.stop()
         if self.broker:
             await self.broker.stop()
 

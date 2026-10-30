@@ -10,7 +10,8 @@
       - [ ] 3b. Simulator gateway as LLRP target; real-world test with the MasterPort
 - [x] 4. PDU inheritance – per E1.33 4.1.1 only allowed for EPT, done as part of 5
 - [x] 5. EPT in the broker: EPT clients, client list, forwarding (incl. inheritance), Unknown CID/Vector status
-- [ ] 6. Detect multiple brokers in the same scope via mDNS and warn
+- [x] 6. One broker per scope (9.1.4): STANDBY at start-up while another broker holds the scope, monitoring,
+      `brokers` command
 
 ## Robustness in real-world use
 

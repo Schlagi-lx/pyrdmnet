@@ -128,6 +128,7 @@ class LiveConfig:
     poll_s: float = 0.5  # interval while waiting for devices
     search_retry_s: float = 5.0  # between searches for responders behind the gateway ports
     mdns_self_test_s: float = 4.0
+    mdns_check_s: float = 3.0  # search for other brokers on the scope before registering (E1.33 9.1.4)
     dnssd: bool = True
     expected: A.ExpectedSetting | None = None
 
@@ -163,13 +164,16 @@ class LiveTest:
         except OSError as f:
             return self._abort(f"Broker cannot start on {self.k.host}:{self.k.port}: {f}")
         self.result["broker_uid"] = str(broker.config.uid)
-        reg = None
+        announcer = None
         try:
             self.p(f"\nBroker running: {self.k.host}:{broker.port}, scope \"{self.k.scope}\", UID {broker.config.uid}")
             if self.k.dnssd:
-                reg = await asyncio.to_thread(self._register_mdns, broker)
+                announcer = await self._announce(broker)
+            reg = announcer.registration if announcer else None
             self.result["mdns"] = {"active": reg is not None, "method": reg.method if reg else None,
-                                     "name": reg.name if reg else None}
+                                   "name": reg.name if reg else None,
+                                   "standby": bool(announcer and announcer.standby),
+                                   "other_brokers": [r.describe() for r in announcer.conflicts] if announcer else []}
             if reg:
                 self.p("In the MasterPort, enable RDMnet with automatic broker discovery (mDNS/DNS-SD), "
                        f"scope \"{self.k.scope}\".")
@@ -185,26 +189,33 @@ class LiveTest:
             await self._read_devices(broker)
             return self._finish(broker)
         finally:
-            if reg:
-                reg.stop()
+            if announcer:
+                await announcer.stop()
             await broker.stop()
 
-    def _register_mdns(self, broker: RdmnetBroker):
-        from .dnssd import DnssdRegistration
+    async def _announce(self, broker: RdmnetBroker):
+        """Check the scope for other brokers, then register via mDNS (E1.33 9.1.4)."""
+        from .dnssd import BrokerAnnouncer
+        announcer = BrokerAnnouncer(broker, self.k.host, check_s=self.k.mdns_check_s, on_message=self._hint)
         try:
-            reg = DnssdRegistration(self.k.scope, broker.config.cid, broker.config.uid, self.k.host, broker.port)
+            await announcer.start()
         except Exception as f:
             self._hint(f"mDNS registration failed: {f} - the broker must be entered statically in the MasterPort")
             return None
+        if announcer.standby:
+            self._hint("Another broker on this scope may take the MasterPort's connection instead of this one. "
+                       "Stop the other broker or use a different scope; until then enter this broker statically.")
+            return announcer
+        reg = announcer.registration
         self.p(f"mDNS: registered as \"{reg.name}\" ({reg.method}), type _rdmnet._tcp with subtype _{self.k.scope}")
-        found = reg.self_test(duration_s=self.k.mdns_self_test_s)
+        found = await asyncio.to_thread(reg.self_test, self.k.mdns_self_test_s)
         if reg.method == "dns-sd":
             if found:
                 self.p("mDNS self-test: broker discoverable via the scope subtype - OK")
             else:
                 self._hint("mDNS self-test: own service not found via the scope subtype")
             self.result["mdns_self_test"] = found
-        return reg
+        return announcer
 
     async def _wait_for_devices(self, broker: RdmnetBroker) -> list[str]:
         end = time.monotonic() + self.k.wait_for_devices_s

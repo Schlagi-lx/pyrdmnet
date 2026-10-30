@@ -16,25 +16,43 @@ from helpers import FAST_LIVE
 
 CID = uuid.UUID("12345678-90ab-cdef-1234-567890abcdef")
 
-# Fake dns-sd as a Python script (runs on macOS, Linux and Windows): -R reports success and keeps
-# running, -B lists the service. On Windows it is started through a dns-sd.cmd wrapper.
+# Fake dns-sd as a Python script (runs on macOS, Linux and Windows). On Windows it is started through a
+# dns-sd.cmd wrapper.
+#   -R  registers: reports success and keeps running (stores the arguments in reg.json)
+#   -B  lists the own registration and the "other brokers" from others.txt (lines: name|host|port|TXT)
+#   -L  resolves a name to host, port and TXT records like the real dns-sd output
 FAKE = r'''
-import pathlib, sys, time
+import json, pathlib, sys, time
 here = pathlib.Path(__file__).resolve().parent
 args = sys.argv[1:]
 wait = 3 if sys.platform == "win32" else 30  # Windows: the wrapper's child outlives terminate(); keep it short
+reg = json.loads((here / "reg.json").read_text()) if (here / "reg.json").exists() else None
+others_file = here / "others.txt"
+others = [line.split("|") for line in others_file.read_text().splitlines() if line] if others_file.exists() else []
 if args[0] == "-R":
     (here / "call.txt").write_text(" ".join(args))
-    (here / "name.txt").write_text(args[1])
+    (here / "reg.json").write_text(json.dumps(args))
     print(f"Registering Service {args[1]}.{args[2]} port {args[4]}", flush=True)
     print(f"Got a reply for service {args[1]}.{args[2]}local.: Name now registered and active", flush=True)
     time.sleep(wait)
 elif args[0] == "-B":
     print("Browsing for", args[1], flush=True)
-    print("12:00:00.000  Add        3   4 local.               _rdmnet._tcp.        "
-          + (here / "name.txt").read_text(), flush=True)
+    names = ([reg[1]] if reg else []) + [o[0] for o in others]
+    for name in names:
+        print("12:00:00.000  Add        3   4 local.               _rdmnet._tcp.        " + name, flush=True)
     if sys.platform != "win32":
         time.sleep(wait)
+elif args[0] == "-L":
+    if reg and args[1] == reg[1]:
+        host, port, txt = "fakehost.local.", reg[4], " ".join(t.replace(" ", "\\ ") for t in reg[5:])
+    else:
+        match = [o for o in others if o[0] == args[1]]
+        if not match:
+            sys.exit(0)
+        _, host, port, txt = match[0]
+    print(f"Lookup {args[1]}._rdmnet._tcp.local", flush=True)
+    print(f"12:00:00.000  {args[1]}._rdmnet._tcp.local. can be reached at {host}:{port} (interface 1)", flush=True)
+    print(" " + txt, flush=True)
 '''
 
 

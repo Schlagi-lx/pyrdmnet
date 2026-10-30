@@ -108,10 +108,11 @@ class RdmnetBroker:
         self.port: int | None = None
         self._capture_lines = 0
         self.llrp_target: LlrpTarget | None = None
+        self.state = C.E133_BROKER_ACTIVE  # STANDBY while another broker holds the scope (9.1.4)
         k = self.config
         self.responder = BrokerResponder(
             BrokerResponderInfo(uid=k.uid, scope=k.scope, search_domain=k.search_domain, device_label=k.device_label),
-            event=self._event)
+            event=self._event, state=lambda: self.state)
 
     # ----------------------------------------------------------------- Lifecycle
     async def start(self) -> None:
@@ -161,6 +162,8 @@ class RdmnetBroker:
             "port": self.port,
             "scope": self.config.scope,
             "broker_uid": str(self.config.uid),
+            "state": {C.E133_BROKER_ACTIVE: "active", C.E133_BROKER_STANDBY: "standby",
+                      C.E133_BROKER_DISABLED: "disabled"}.get(self.state, str(self.state)),
             "clients": [
                 {"uid": str(c.uid), "type": c.entry.type_text, "cid": str(c.entry.cid),
                  "peer": c.connection.peer, "connected_since": c.connected_since}
@@ -168,6 +171,12 @@ class RdmnetBroker:
             ],
             "counters": dict(self.counters),
         }
+
+    def set_state(self, state: int, **details) -> None:
+        """Set ACTIVE/STANDBY (used by the DNS-SD announcer, E1.33 9.1.4)."""
+        if state != self.state:
+            self.state = state
+            self._event("broker_state", state=self.status()["state"], **details)
 
     def _all_clients(self) -> list[_Client]:
         return list(self._clients.values()) + list(self._ept_clients.values())

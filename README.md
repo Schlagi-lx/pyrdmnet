@@ -15,7 +15,7 @@ through a synchronous interface.
 
 | | |
 |---|---|
-| Software tests | 152/152 passing on Linux, macOS and Windows (Python 3.10–3.13, standard library only) |
+| Software tests | 161/161 passing on Linux, macOS and Windows (Python 3.10–3.13, standard library only) |
 | Real-world test | with an **LSS MasterPort 2** (firmware 2.13) as RDMnet gateway and an **ETC ColorSource PAR**: broker discovery via mDNS, connection, finding devices, reading, setting mode/start address and reading back (tested with 0.4) |
 | Other gateways/devices | not tested – feedback welcome |
 
@@ -31,6 +31,9 @@ No E1.33 conformance testing, no certification. Use at your own risk (see licens
   `BROKER_STATUS`, device info). Scope and state cannot be changed via RDM.
 - **mDNS registration** `_rdmnet._tcp` with scope subtype – via Bonjour (`dns-sd`, available on macOS), otherwise
   optionally via the `zeroconf` package
+- **One broker per scope** (E1.33 9.1.4): before announcing itself the broker looks for other brokers on its scope;
+  if there is one it stays in STANDBY (reported via `BROKER_STATUS`) until the other one is gone, and while running it
+  warns when another broker appears. `brokers` lists all brokers of a scope.
 - **Controller**: RDM GET, ACK_TIMER, ACK_OVERFLOW, NACK, status messages
 - **Reading** via gateway endpoints or native RDMnet devices: manufacturer, model, firmware, DMX personalities with
   footprint, start address, sensors, device hours
@@ -75,6 +78,7 @@ Or install as a package: `pip install .` (optionally with mDNS via zeroconf: `pi
 | `livetest` | test with a real gateway, read only |
 | `writetest` | set mode/start address on a real device, verify and restore (with on-site confirmation) |
 | `llrp` | find components via LLRP (no broker needed); set with `--uid` and `--scope`/`--broker`/`--domain` |
+| `brokers` | list the brokers announced via mDNS for a scope; warns if there is more than one |
 | `demo` | complete offline run (simulation) |
 
 Example with separate processes:
