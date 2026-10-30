@@ -15,6 +15,7 @@ from pyrdmnet.simulator import SimFixture, SimulatedGateway
 from pyrdmnet import rdm_params as R
 from pyrdmnet.rdm import Uid
 
+from helpers import FAST_LIVE, FAST_WRITE
 from test_live_test import free_port
 
 
@@ -37,8 +38,10 @@ class TestWriteTest(unittest.IsolatedAsyncioTestCase):
         port = free_port()
         gateway = gateway or SimulatedGateway(fixture=etc_par_sim())
         responses = list(responses if responses is not None else ["y"] * len(CHECKLIST))
-        k = LiveConfig(host="127.0.0.1", port=port, folder=Path(self.tmp.name), wait_for_devices_s=3,
-                       find_responders_s=2, rdm_timeout_s=1, dnssd=False)
+        k = LiveConfig(host="127.0.0.1", port=port, folder=Path(self.tmp.name), wait_for_devices_s=1.5,
+                       find_responders_s=0.6, rdm_timeout_s=1, dnssd=False, **FAST_LIVE)
+        for key, value in FAST_WRITE.items():
+            setattr(wc, key, value)
         st = WriteTest(k, wc, output=self.output.append, input_fn=lambda _: responses.pop(0) if responses else "n")
 
         async def connect():
@@ -127,9 +130,9 @@ class TestWriteTest(unittest.IsolatedAsyncioTestCase):
             return responses.pop(0)
         port = free_port()
         g = SimulatedGateway(fixture=etc_par_sim())
-        k = LiveConfig(host="127.0.0.1", port=port, folder=Path(self.tmp.name), wait_for_devices_s=3,
-                       find_responders_s=2, rdm_timeout_s=1, dnssd=False)
-        st = WriteTest(k, WriteConfig(4, 100), output=self.output.append, input_fn=slow)
+        k = LiveConfig(host="127.0.0.1", port=port, folder=Path(self.tmp.name), wait_for_devices_s=1.5,
+                       find_responders_s=0.6, rdm_timeout_s=1, dnssd=False, **FAST_LIVE)
+        st = WriteTest(k, WriteConfig(4, 100, **FAST_WRITE), output=self.output.append, input_fn=slow)
 
         async def connect():
             await asyncio.sleep(0.5)

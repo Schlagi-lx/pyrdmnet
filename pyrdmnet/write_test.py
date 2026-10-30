@@ -46,6 +46,7 @@ class WriteConfig:
     uid: Uid | None = None  # required if there are several fixtures
     readback_attempts: int = 5
     pause_after_set_s: float = 0.5
+    readback_pause_s: float = 1.0  # between read-back attempts (device may need a moment after a mode change)
 
 
 class WriteTest(LiveTest):
@@ -211,11 +212,11 @@ class WriteTest(LiveTest):
                 actual = await reader.read_setting(dmx_addr)
             except RdmError as f:
                 report["error"].append(f"Read back attempt {attempt + 1}: {f}")
-                await asyncio.sleep(1)
+                await asyncio.sleep(self.wc.readback_pause_s)
                 continue
             if (actual.personality_current, actual.start_address, actual.footprint) == (mode, address, footprint):
                 break
-            await asyncio.sleep(1)  # device may need a moment after the mode change
+            await asyncio.sleep(self.wc.readback_pause_s)
         if actual:
             report["actual"] = {"mode": actual.personality_current, "address": actual.start_address,
                               "footprint": actual.footprint}

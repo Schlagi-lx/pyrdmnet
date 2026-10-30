@@ -119,6 +119,7 @@ class ArtnetRdmController:
         self._tod_new = None
         self._pending = {}              # (uid, tn) -> Future
         self.foreign_packets = 0
+        self.flush_wait_s = 3.0         # minimum wait after AtcFlush (full RDM discovery in the node)
 
     @property
     def connected(self):
@@ -187,7 +188,7 @@ class ArtnetRdmController:
         if flush and not any(pa in port_addresses for _, pa in self.tod.values()):
             for pa in sorted(set(port_addresses)):
                 self.transport.sendto(tod_control(pa), (self.target_ip, self.target_port))
-            await asyncio.sleep(max(wait_s, 3.0))
+            await asyncio.sleep(max(wait_s, self.flush_wait_s))
             await probe_round()
         return [DeviceAddress(u, 0, u) for u, (_, pa) in sorted(self.tod.items(), key=lambda x: (x[1][1], str(x[0])))
                 if pa in port_addresses]

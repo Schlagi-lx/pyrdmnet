@@ -20,9 +20,9 @@ EXPECTED = A.ExpectedSetting("Direct 6ch", footprint=6, start_address=100, unive
 class TestFacade(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.db = Path(self.tmp.name) / "mess.sqlite"
+        self.db = Path(self.tmp.name) / "measurement.sqlite"
         self.module = RdmModule(RdmConfig(broker_port=0, db=self.db, timeout_s=1.0,
-                                        event_file=Path(self.tmp.name) / "ereignisse.jsonl"))
+                                        event_file=Path(self.tmp.name) / "events.jsonl"))
         self.module.start()
         self.gw = SimulatedGateway()
         self.module._run(self.gw.connect("127.0.0.1", self.module.port))
@@ -67,13 +67,14 @@ class TestFacade(unittest.TestCase):
                          ["DEVIATION", "DEVIATION", "OK"])
         json.loads(db.execute("SELECT profile_json FROM rdm_device").fetchone()[0])
         db.close()
-        events = (Path(self.tmp.name) / "ereignisse.jsonl").read_text(encoding="utf-8").splitlines()
+        events = (Path(self.tmp.name) / "events.jsonl").read_text(encoding="utf-8").splitlines()
         self.assertTrue(any(json.loads(z)["event"] == "client_connected" for z in events))
 
     def test_measurement_runs_despite_rdm_failure(self):
         (dmx_addr,) = self.module.find_devices()
         profile = self.module.read_device(dmx_addr)
         self.gw.mute = True
+        self.module.config.timeout_s = 0.2  # silent device: every sensor request times out
         ran = False
         with self.module.accompany_measurement(profile, "M-2") as e:
             ran = True

@@ -123,6 +123,11 @@ class LiveConfig:
     wait_for_devices_s: float = 180.0
     find_responders_s: float = 60.0
     rdm_timeout_s: float = 5.0
+    # pauses of the lab flow (tests use short values)
+    settle_s: float = 3.0  # after the first device connects: time for further gateways
+    poll_s: float = 0.5  # interval while waiting for devices
+    search_retry_s: float = 5.0  # between searches for responders behind the gateway ports
+    mdns_self_test_s: float = 4.0
     dnssd: bool = True
     expected: A.ExpectedSetting | None = None
 
@@ -192,7 +197,7 @@ class LiveTest:
             self._hint(f"mDNS registration failed: {f} - the broker must be entered statically in the MasterPort")
             return None
         self.p(f"mDNS: registered as \"{reg.name}\" ({reg.method}), type _rdmnet._tcp with subtype _{self.k.scope}")
-        found = reg.self_test()
+        found = reg.self_test(duration_s=self.k.mdns_self_test_s)
         if reg.method == "dns-sd":
             if found:
                 self.p("mDNS self-test: broker discoverable via the scope subtype - OK")
@@ -223,9 +228,9 @@ class LiveTest:
             seen = len(events)
             devices = [c["uid"] for c in broker.status()["clients"] if c["type"] == "Device"]
             if devices:
-                await asyncio.sleep(3)  # give further gateways a moment to connect
+                await asyncio.sleep(self.k.settle_s)  # give further gateways a moment to connect
                 return [c["uid"] for c in broker.status()["clients"] if c["type"] == "Device"]
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(self.k.poll_s)
         return devices
 
     async def _read_devices(self, broker: RdmnetBroker) -> None:
@@ -265,8 +270,8 @@ class LiveTest:
                 self._hint(f"Search: {f}")
             if addresses or time.monotonic() >= end:
                 break
-            self.p("  no fixtures reported on the gateway ports yet - retrying in 5 s")
-            await asyncio.sleep(5)
+            self.p(f"  no fixtures reported on the gateway ports yet - retrying in {self.k.search_retry_s:g} s")
+            await asyncio.sleep(self.k.search_retry_s)
         if not addresses:
             self._error("No RDM responders found - the gateway reports no fixture on any port")
             for e in c.devices():

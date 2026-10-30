@@ -12,6 +12,8 @@ from unittest import mock
 from pyrdmnet import dnssd
 from pyrdmnet.rdm import Uid
 
+from helpers import FAST_LIVE
+
 CID = uuid.UUID("12345678-90ab-cdef-1234-567890abcdef")
 
 # Fake dns-sd as a Python script (runs on macOS, Linux and Windows): -R reports success and keeps
@@ -90,7 +92,8 @@ class TestWithFakeDnsSd(unittest.TestCase):
         import asyncio
         from pyrdmnet.live_test import LiveConfig, LiveTest
         reader: list[str] = []
-        k = LiveConfig(host="127.0.0.1", port=0, folder=Path(self.tmp.name), wait_for_devices_s=1, dnssd=True)
+        k = LiveConfig(host="127.0.0.1", port=0, folder=Path(self.tmp.name), wait_for_devices_s=0.5, dnssd=True,
+                       **FAST_LIVE)
         res = asyncio.run(LiveTest(k, output=reader.append).run())
         self.assertTrue(res["mdns"]["active"])
         self.assertTrue(res["mdns_self_test"])

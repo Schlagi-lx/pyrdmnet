@@ -9,6 +9,9 @@
 - New module `ept.py` with EPT encoding and `EptClient`.
 - Windows support: tests run on Windows in CI; adapter list via `ipconfig` (Windows) and `ip` (Linux without
   `ifconfig`); `dns-sd` started via its resolved path; firewall hints per platform; README section for Windows.
+- Pauses of the lab flows are configurable, defaults unchanged: `LiveConfig.settle_s`, `poll_s`, `search_retry_s`,
+  `mdns_self_test_s`; `WriteConfig.readback_pause_s`; `ArtnetRdmController.flush_wait_s`. The test suite uses short
+  values and runs in about 30 s instead of about 100 s.
 - `ClientEntry` carries EPT sub-protocols (`ept_protocols`, `ClientEntry.ept()`); `type_text` is "EPT" for them.
 
 ## 0.5.0

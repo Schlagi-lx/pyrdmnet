@@ -12,6 +12,8 @@ from pyrdmnet.live_test import (LiveConfig, LiveTest, choose_adapter, ip_is_loca
                                 parse_ipconfig)
 from pyrdmnet.simulator import SimulatedGateway
 
+from helpers import FAST_LIVE
+
 
 def free_port() -> int:
     with socket.socket() as s:
@@ -30,8 +32,8 @@ class TestLiveTest(unittest.IsolatedAsyncioTestCase):
     async def _run_test(self, gateway: SimulatedGateway | None, device_scope="default", **kw):
         port = free_port()
         kw.setdefault("dnssd", False)
-        k = LiveConfig(host="127.0.0.1", port=port, folder=Path(self.tmp.name), wait_for_devices_s=3,
-                       find_responders_s=2, rdm_timeout_s=1, **kw)
+        k = LiveConfig(host="127.0.0.1", port=port, folder=Path(self.tmp.name), wait_for_devices_s=1.5,
+                       find_responders_s=0.6, rdm_timeout_s=1, **FAST_LIVE, **kw)
         lt = LiveTest(k, output=self.output.append)
 
         async def connect_later():

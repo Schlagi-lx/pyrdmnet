@@ -21,7 +21,7 @@
 ## Tests / maintenance
 
 - [x] 9a. Windows support: tests on Windows in CI, adapter list (ipconfig/ip), portable mDNS test, docs
-- [ ] 10. Reduce test run time (currently about 100 s): replace fixed waits with events
+- [x] 10. Reduce test run time: about 100 s → about 30 s (lab pauses configurable, tests use short ones)
 - [x] 11. README: replace the `<konto>` placeholder in the clone command
 - [x] 12a. Translate the project to English (0.5.0)
 - [ ] 12. Release 0.5 with changelog, possibly PyPI

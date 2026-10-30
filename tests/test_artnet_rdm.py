@@ -67,6 +67,7 @@ class WithNode(unittest.TestCase):
 
     def test_empty_tod_triggers_flush(self):
         self.node.discovery_needed = True
+        self.m.controller.flush_wait_s = 0.3  # lab default 3 s for the node's full discovery
         dmx_addr = self.m.find_devices()
         self.assertEqual(len(dmx_addr), 2)
         self.assertIn(AR.OP_TOD_CONTROL, self.node.received)
