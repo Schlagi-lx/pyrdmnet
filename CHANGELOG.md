@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Live test: additional checks with `--checks` (default `comms,controllers`; `all`, `none`): `TCP_COMMS_STATUS` of
+  every gateway, two controllers at once on one fixture (fair queuing), LLRP discovery with scope and search domain
+  (read only), broker restart with the reconnection time of every gateway. Results in `result.json` (`checks`) and
+  a section of `report.md`.
+- Test plan for the hardware tests: [docs/HARDWARE_TESTS.md](docs/HARDWARE_TESTS.md).
 - The simulator can be an LLRP target (`SimulatedGateway.start_llrp()`, CLI `simulator --llrp` with `--adapter` /
   `--interface6`): same CID and default responder as the RPT component, connected devices only answer probes
   without the "inactive" filter. Scope, static broker and search domain can be changed via LLRP; a scope change

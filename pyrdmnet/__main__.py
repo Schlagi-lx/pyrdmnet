@@ -136,12 +136,30 @@ def _livetest(args) -> int:
             print("For the settings check, specify --mode, --footprint and --start-address together.")
             return 2
         expected = ExpectedSetting(args.mode, args.footprint, args.start_address, args.universe)
+    checks = _parse_checks(args.checks)
+    if checks is None:
+        return 2
     k = LiveConfig(host=host, port=args.port, scope=args.scope, folder=Path(args.folder),
                    wait_for_devices_s=args.wait, find_responders_s=args.search_s, rdm_timeout_s=args.timeout,
-                   dnssd=not args.no_mdns, expected=expected)
-    print(f"pyrdmnet {__version__} - LIVE TEST, read only (no RDM SET)")
+                   dnssd=not args.no_mdns, expected=expected, checks=checks)
+    print(f"pyrdmnet {__version__} - LIVE TEST, read only (no RDM SET)"
+          + (f", additional checks: {', '.join(checks)}" if checks else ""))
     res = asyncio.run(LiveTest(k).run())
     return 0 if res.get("success") else 1
+
+
+def _parse_checks(text: str) -> tuple[str, ...] | None:
+    from .live_test import ALL_CHECKS
+    if text in ("", "none"):
+        return ()
+    if text == "all":
+        return ALL_CHECKS
+    checks = tuple(c.strip() for c in text.split(",") if c.strip())
+    unknown = [c for c in checks if c not in ALL_CHECKS]
+    if unknown:
+        print(f"Unknown check(s): {', '.join(unknown)} - possible: {', '.join(ALL_CHECKS)}, all, none")
+        return None
+    return checks
 
 
 def _write_test(args) -> int:
@@ -350,6 +368,10 @@ def main(argv: list[str] | None = None) -> int:
     lt.add_argument("--footprint", type=int)
     lt.add_argument("--start-address", type=int)
     lt.add_argument("--universe", type=int)
+    lt.add_argument("--checks", default="comms,controllers",
+                    help="additional checks, comma-separated: comms (TCP_COMMS_STATUS), controllers (two "
+                         "controllers at once), llrp (find gateways via LLRP, read only), restart (restart the "
+                         "broker, measure reconnection); 'all' or 'none'. Default: comms,controllers")
 
     st = sub.add_parser("writetest", help="set mode/address, read back, restore (with checklist)")
     st.add_argument("--host", help="IP of the adapter facing the gateway (omit: choose from list)")
