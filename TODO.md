@@ -6,7 +6,7 @@
       (`COMPONENT_SCOPE`, `SEARCH_DOMAIN`, `BROKER_STATUS`, base PIDs per E1.20)
 - [x] 2. Handle `CLIENT_ENTRY_UPDATE` (previously only counted and ignored)
 - [x] 3. LLRP: find gateways without a broker, set scope/broker address
-      - [ ] 3a. LLRP over IPv6 (E1.33 requires IPv4 and IPv6 for the manager)
+      - [x] 3a. LLRP over IPv6 (E1.33 requires IPv4 and IPv6 for the manager)
       - [ ] 3b. Simulator gateway as LLRP target; real-world test with the MasterPort
 - [x] 4. PDU inheritance – per E1.33 4.1.1 only allowed for EPT, done as part of 5
 - [x] 5. EPT in the broker: EPT clients, client list, forwarding (incl. inheritance), Unknown CID/Vector status
@@ -18,6 +18,9 @@
 - [x] 7. Automatic reconnection after a broker restart (6.2.5 back-off, Client Redirect IPv4), facade waits
 - [ ] 8. Test several gateways at once (a second device next to the MasterPort)
 - [ ] 9. Test more gateways/devices, compatibility list in the README
+- [ ] 9b. Revise the restrictive SET settings: today SET is hard-wired to `ALLOWED_SET_PIDS`
+      (controller: `DMX_PERSONALITY`, `DMX_START_ADDRESS`, `IDENTIFY_DEVICE`; LLRP: `COMPONENT_SCOPE`,
+      `SEARCH_DOMAIN`, `IDENTIFY_DEVICE`), discovery commands are always blocked, plus the per-session write lock
 
 ## Tests / maintenance
 

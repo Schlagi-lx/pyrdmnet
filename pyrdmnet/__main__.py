@@ -33,8 +33,9 @@ from .simulator import SimulatedGateway
 
 
 def _host_port(text: str) -> tuple[str, int]:
+    """``host:port``; IPv6 in brackets: ``[fd00::5]:8888``."""
     host, _, port = text.rpartition(":")
-    return host or "127.0.0.1", int(port)
+    return host.strip("[]") or "127.0.0.1", int(port)
 
 
 async def _broker(args) -> None:
@@ -144,13 +145,16 @@ def _write_test(args) -> int:
 async def _llrp(args) -> int:
     from .llrp import LlrpManager, LlrpNetwork
     from .rdm import Uid
-    network = LlrpNetwork(adapter=args.adapter, ttl=args.ttl)
-    if args.ttl > 1:
-        print("Note: TTL > 1 - responses may come from other network segments.")
+    network = LlrpNetwork(adapter=args.adapter, ttl=args.ttl, hop_limit=args.hop_limit,
+                          interface6=args.interface6, ipv4=not args.ipv6_only, ipv6=not args.ipv4_only)
+    if args.ttl > 1 or args.hop_limit > 1:
+        print("Note: TTL/hop limit > 1 - responses may come from other network segments.")
     set_param = args.scope or args.domain
     async with LlrpManager(network) as m:
         filt = 0 if args.all else C.LLRP_FILTER_CLIENT_CONN_INACTIVE
-        print(f"LLRP discovery via {args.adapter} ({'all' if args.all else 'only without broker connection'}) ...")
+        via = " + ".join(f"{f} ({args.adapter if f == 'IPv4' else f'interface {args.interface6}'})"
+                         for f in m.families)
+        print(f"LLRP discovery via {via} ({'all' if args.all else 'only without broker connection'}) ...")
         targets = await m.discover(filter=filt)
         if args.uid:
             wanted = Uid.from_text(args.uid)
@@ -166,7 +170,7 @@ async def _llrp(args) -> int:
             except Exception as error:  # a single target must not abort the list
                 e["error"] = str(error)
             results.append(e)
-            print(f"  {e['uid']}  {e['type']:<10} {e['address']:<15} HW {e['hardware']}  "
+            print(f"  {e['uid']}  {e['type']:<10} {e['address']:<25} HW {e['hardware']}  "
                   f"Scope \"{e.get('scope', '?')}\"  Broker {e.get('static_broker') or 'via mDNS'}"
                   f"  Domain {e.get('search_domain', '?')}" + (f"  ERROR: {e['error']}" if "error" in e else ""))
         if not targets:
@@ -341,10 +345,18 @@ def main(argv: list[str] | None = None) -> int:
     ll.add_argument("--all", action="store_true", help="also find clients already connected to a broker")
     ll.add_argument("--uid", help="only this target (required for setting), e.g. 7ff0:00000100")
     ll.add_argument("--scope", help="set the scope")
-    ll.add_argument("--broker", help="with --scope: static broker address IP:port (otherwise mDNS discovery)")
+    ll.add_argument("--broker",
+                    help="with --scope: static broker address IP:port or [IPv6]:port (otherwise mDNS discovery)")
     ll.add_argument("--domain", help="set the search domain")
     ll.add_argument("--yes", action="store_true", help="set without confirmation prompt")
-    ll.add_argument("--ttl", type=int, default=1)
+    ll.add_argument("--ttl", type=int, default=1, help="IPv4 TTL (default 1: local segment only)")
+    ll.add_argument("--hop-limit", type=int, default=1, help="IPv6 hop limit (default 1)")
+    ll.add_argument("--interface6", default="0",
+                    help="IPv6 interface: name (e.g. eth0) or index (Windows: see 'netsh interface ipv6 show "
+                         "interfaces'); 0 = system default")
+    family = ll.add_mutually_exclusive_group()
+    family.add_argument("--ipv4-only", action="store_true", help="LLRP over IPv4 only")
+    family.add_argument("--ipv6-only", action="store_true", help="LLRP over IPv6 only")
     ll.add_argument("--json", help="save the result as JSON")
 
     br = sub.add_parser("brokers", help="list brokers on a scope via mDNS (warns about more than one)")

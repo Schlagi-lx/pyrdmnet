@@ -15,7 +15,7 @@ through a synchronous interface.
 
 | | |
 |---|---|
-| Software tests | 172/172 passing on Linux, macOS and Windows (Python 3.10–3.13, standard library only) |
+| Software tests | 187/187 passing on Linux, macOS and Windows (Python 3.10–3.13, standard library only) |
 | Real-world test | with an **LSS MasterPort 2** (firmware 2.13) as RDMnet gateway and an **ETC ColorSource PAR**: broker discovery via mDNS, connection, finding devices, reading, setting mode/start address and reading back (tested with 0.4) |
 | Other gateways/devices | not tested – feedback welcome |
 
@@ -45,7 +45,7 @@ No E1.33 conformance testing, no certification. Use at your own risk (see licens
 - **Sensor snapshots** before/after an action, stored in SQLite (tables `rdm_*`)
 - **RDM over Art-Net** (ArtTod, ArtRdm)
 - **LLRP** (E1.33 section 5): find RDMnet components without a broker, read and – after confirmation – set scope,
-  static broker address and search domain. The broker can respond as an LLRP target itself (`--llrp`). IPv4 only.
+  static broker address and search domain. The broker can respond as an LLRP target itself (`--llrp`). IPv4 and IPv6.
 - **Simulator** for tests without hardware
 
 ## Write safety
@@ -98,7 +98,12 @@ Gateway with the wrong scope or without broker discovery? Find and reconfigure i
 python3 -m pyrdmnet llrp --adapter 192.168.1.10                       # search, show scope
 python3 -m pyrdmnet llrp --adapter 192.168.1.10 --uid 7ff0:00000100 \
         --scope default --broker 192.168.1.10:8888                    # set scope + static broker
+python3 -m pyrdmnet llrp --adapter 192.168.1.10 --interface6 eth0     # IPv6 on a named interface
 ```
+
+LLRP runs over IPv4 and IPv6 at the same time. `--interface6` selects the IPv6 interface (name such as `eth0`/`en0`,
+or the index; on Windows see `netsh interface ipv6 show interfaces`); without it the system default is used. If the
+computer has no IPv6, LLRP continues over IPv4 with a warning.
 
 On a real network, set `--host` to the IP of the network adapter and register via mDNS with `--dnssd`. On the
 gateway, set broker discovery to mDNS and enter the same scope (default: `default`, case-sensitive). Avoid competing

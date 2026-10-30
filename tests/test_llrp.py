@@ -16,18 +16,34 @@ from pyrdmnet.broker import BrokerConfig, RdmnetBroker
 from pyrdmnet.controller import RdmNackError, RdmTimeoutError, WriteLockError
 from pyrdmnet.llrp import (BROADCAST_CID, ComponentResponder, LlrpManager, LlrpNetwork, LlrpTarget, DiscoveredTarget,
                            ProbeRequest, ProbeReply, build_llrp, build_probe_request, build_probe_reply,
-                           read_llrp, read_probe_request, read_probe_reply, read_rdm_cmd)
+                           interface_index, read_llrp, read_probe_request, read_probe_reply, read_rdm_cmd)
 from pyrdmnet.rdm import RdmMessage, Uid
 
 _ports = itertools.count(20000 + (os.getpid() % 2000) * 10, 2)
 
 
-def network(multicast: bool) -> LlrpNetwork:
+def network(multicast: bool, family: str = "v4") -> LlrpNetwork:
+    """family: "v4", "v6" or "dual" (unicast on 127.0.0.1 / ::1, multicast on the loopback interface)."""
     p = next(_ports)
+    v4, v6 = family in ("v4", "dual"), family in ("v6", "dual")
     if multicast:
-        return LlrpNetwork(adapter="127.0.0.1", request_port=p, response_port=p + 1)
+        return LlrpNetwork(adapter="127.0.0.1", request_port=p, response_port=p + 1, ipv4=v4, ipv6=v6,
+                           interface6=LOOPBACK6_INDEX)
     return LlrpNetwork(adapter="127.0.0.1", request_addr="127.0.0.1", response_addr="127.0.0.1",
-                    request_port=p, response_port=p + 1, multicast=False)
+                       request_port=p, response_port=p + 1, multicast=False, ipv4=v4, ipv6=v6,
+                       adapter6="::1", request_addr6="::1", response_addr6="::1")
+
+
+def loopback6_index() -> int:
+    for name in ("lo", "lo0", "Loopback Pseudo-Interface 1"):
+        try:
+            return socket.if_nametoindex(name)
+        except (OSError, AttributeError):
+            pass
+    return 1  # Windows: the loopback pseudo-interface has index 1
+
+
+LOOPBACK6_INDEX = loopback6_index()
 
 
 def multicast_available() -> bool:
@@ -46,6 +62,37 @@ def multicast_available() -> bool:
         return False
 
 
+def ipv6_available() -> bool:
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_DGRAM) as s:
+            s.bind(("::1", 0))
+            s.settimeout(0.5)
+            s.sendto(b"x", s.getsockname()[:2])
+            return s.recv(10) == b"x"
+    except (OSError, AttributeError):
+        return False
+
+
+def multicast6_available() -> bool:
+    if not IPV6:
+        return False
+    try:
+        n = network(True, "v6")
+        with socket.socket(socket.AF_INET6, socket.SOCK_DGRAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("::", n.request_port))
+            s.setsockopt(socket.IPPROTO_IPV6, getattr(socket, "IPV6_JOIN_GROUP", None) or socket.IPV6_ADD_MEMBERSHIP,
+                         socket.inet_pton(socket.AF_INET6, n.request_addr6) + struct.pack("@I", LOOPBACK6_INDEX))
+            s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, LOOPBACK6_INDEX)
+            s.settimeout(0.5)
+            s.sendto(b"x", (n.request_addr6, n.request_port))
+            return s.recv(10) == b"x"
+    except (OSError, AttributeError):
+        return False
+
+
+IPV6 = ipv6_available()
+MULTICAST6 = multicast6_available()
 MULTICAST = multicast_available()
 
 
@@ -86,9 +133,14 @@ class TestEncoding(unittest.TestCase):
 
 class LlrpTest(unittest.IsolatedAsyncioTestCase):
     multicast = False
+    family = "v4"
+
+    @property
+    def loopback(self) -> str:
+        return "::1" if self.family == "v6" else "127.0.0.1"
 
     async def asyncSetUp(self):
-        self.network = network(self.multicast)
+        self.network = network(self.multicast, self.family)
         self._targets: list[LlrpTarget] = []
         self.m = LlrpManager(self.network, timeout_window_s=0.15, retries=0)
         await self.m.start()
@@ -114,7 +166,7 @@ class TestSingleTarget(LlrpTest):
 
     async def test_found_and_read(self):
         self.assertEqual((self.target.uid, self.target.cid, self.target.type), (self.t.uid, self.t.cid, C.LLRP_TYPE_DEVICE))
-        self.assertEqual(self.target.address, "127.0.0.1")
+        self.assertEqual(self.target.address, self.loopback)
         self.assertEqual(len(self.target.hardware), 6)
         self.assertEqual((await self.m.read_scope(self.target)).scope, "wrong")
         self.assertEqual(await self.m.read_search_domain(self.target), "local.")
@@ -133,6 +185,8 @@ class TestSingleTarget(LlrpTest):
         self.assertEqual(await self.m.set_search_domain(self.target, "studio."), ("local.", "studio."))
         with self.assertRaises(ValueError):
             await self.m.set_scope(self.target, "")
+        _, new = await self.m.set_scope(self.target, "lab", static_broker=("fd00::5", 8888))
+        self.assertEqual((new.static_type, new.static_address), (C.E133_STATIC_CONFIG_IPV6, "[fd00::5]:8888"))
 
     async def test_set_allowed_pids_only(self):
         self.m.write_enabled = True
@@ -145,7 +199,8 @@ class TestSingleTarget(LlrpTest):
             await self.m.read_scope(self.target)
 
     async def test_foreign_cid_ignored(self):
-        other_target = DiscoveredTarget(uuid.uuid4(), self.target.uid, self.target.hardware, self.target.type, "127.0.0.1")
+        other_target = DiscoveredTarget(uuid.uuid4(), self.target.uid, self.target.hardware, self.target.type,
+                                        self.loopback)
         with self.assertRaises(RdmTimeoutError):
             await self.m.read_scope(other_target)
 
@@ -197,6 +252,100 @@ class TestMultipleTargets(LlrpTest):
         self.assertIn((Uid(0, 0), Uid(0x7FFF, 0xFFFFFFFF)), subranges)
         self.assertIn((Uid(0x8000, 0), Uid(0xFFFF, 0xFFFFFFFF)), subranges)
         self.assertTrue(all(len(a.known) <= 3 for a in sent))
+
+
+@unittest.skipUnless(IPV6, "IPv6 loopback (::1) not available")
+class TestSingleTargetIpv6(TestSingleTarget):
+    family = "v6"
+
+
+@unittest.skipUnless(MULTICAST6, "IPv6 multicast on the loopback interface not available")
+class TestMultipleTargetsIpv6(TestMultipleTargets):
+    family = "v6"
+
+
+@unittest.skipUnless(IPV6, "IPv6 loopback (::1) not available")
+class TestDualStack(LlrpTest):
+    family = "dual"
+
+    async def test_request_over_both_families_handled_once(self):
+        t, r = await self.add_target(Uid(0x7FF0, 7))
+        self.assertEqual((self.m.families, t.families), (["IPv4", "IPv6"], ["IPv4", "IPv6"]))
+        (z,) = await self.m.discover()
+        self.assertEqual(t.counters["probe_reply"], 1)  # three probe rounds, the first one answered once
+        self.m.write_enabled = True
+        await self.m.set_search_domain(z, "studio.")  # GET, SET, GET
+        self.assertEqual(t.counters["rdm"], 3)
+        self.assertGreaterEqual(t.counters["duplicate"], 3 + 3)
+
+    async def test_ipv6_only_target(self):
+        self.network.ipv4 = False
+        t, _ = await self.add_target(Uid(0x7FF0, 8))
+        self.network.ipv4 = True
+        self.assertEqual(t.families, ["IPv6"])
+        (z,) = await self.m.discover()
+        self.assertEqual(z.address, "::1")
+        self.assertEqual((await self.m.read_scope(z)).scope, "default")
+
+
+class FakeChannel:
+    family, request, response = "IPv4", ("127.0.0.1", 1), ("127.0.0.1", 2)
+
+    def __init__(self):
+        self.sent: list[bytes] = []
+
+    def send(self, data, destination):
+        self.sent.append(data)
+
+
+class TestFamilies(unittest.IsolatedAsyncioTestCase):
+    async def test_duplicate_request_handled_once(self):
+        r = ComponentResponder(Uid(0x7FF0, 5))
+        t = LlrpTarget(Uid(0x7FF0, 5), uuid.uuid4(), C.LLRP_TYPE_DEVICE, r)
+        v4, v6 = FakeChannel(), FakeChannel()
+        t.channels = [v4, v6]
+        n = RdmMessage(dest=t.uid, source=Uid(0x7FF0, 1), transaction=1, port_or_response_type=1,
+                       command_class=C.CC_SET, pid=C.PID_SEARCH_DOMAIN, data=b"x.")
+        manager = uuid.uuid4()
+        packet = build_llrp(manager, C.VECTOR_LLRP_RDM_CMD, t.cid, 9, P.build_rdm_cmd_pdu(n.encode()))
+        t._on_datagram(packet, ("127.0.0.1", 5), v4)
+        t._on_datagram(packet, ("::1", 5), v6)  # same request over the other family
+        self.assertEqual((len(v4.sent), len(v6.sent), t.counters["rdm"], t.counters["duplicate"]), (1, 0, 1, 1))
+        t._on_datagram(build_llrp(manager, C.VECTOR_LLRP_RDM_CMD, t.cid, 10, P.build_rdm_cmd_pdu(n.encode())),
+                       ("::1", 5), v6)  # next transaction: answered over IPv6
+        self.assertEqual((len(v4.sent), len(v6.sent)), (1, 1))
+
+    async def test_missing_family_is_skipped(self):
+        n = network(False, "dual")
+        with mock.patch("pyrdmnet.llrp._udp_socket6", side_effect=OSError("no IPv6")), \
+                self.assertLogs("pyrdmnet.llrp", "WARNING") as logs:
+            m = LlrpManager(n)
+            await m.start()
+        try:
+            self.assertEqual(m.families, ["IPv4"])
+            self.assertIn("IPv6 not available", logs.output[0])
+        finally:
+            await m.stop()
+
+    async def test_no_family_raises(self):
+        n = network(False, "dual")
+        with mock.patch("pyrdmnet.llrp._udp_socket6", side_effect=OSError("no IPv6")), \
+                mock.patch("pyrdmnet.llrp._udp_socket", side_effect=OSError("no IPv4")), \
+                self.assertLogs("pyrdmnet.llrp", "WARNING"):
+            with self.assertRaises(OSError) as ctx:
+                await LlrpManager(n).start()
+        self.assertIn("no IPv4", str(ctx.exception))
+        with self.assertRaises(ValueError):
+            await LlrpManager(LlrpNetwork(ipv4=False, ipv6=False)).start()
+
+    def test_defaults(self):
+        self.assertTrue(LlrpNetwork().use_ipv6)  # multicast: IPv4 and IPv6 (E1.33 5.3.2)
+        self.assertFalse(LlrpNetwork(multicast=False).use_ipv6)  # unicast needs explicit IPv6 addresses
+        self.assertEqual((C.LLRP_IPV6_REQUEST, C.LLRP_IPV6_RESPONSE), ("ff18::85:0:0:85", "ff18::85:0:0:86"))
+        self.assertEqual(interface_index(" 3".strip()), 3)
+        self.assertEqual(interface_index(4), 4)
+        with self.assertRaises(OSError):
+            interface_index("no-such-interface-xyz")
 
 
 class TestBrokerAsTarget(unittest.IsolatedAsyncioTestCase):
