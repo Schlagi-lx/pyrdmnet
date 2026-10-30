@@ -1,11 +1,13 @@
-"""RDMnet controller: RDM GET unrestricted, RDM SET only restricted.
+"""RDMnet controller: RDM GET unrestricted, RDM SET governed by a :class:`WritePolicy`.
 
-Decision 2026-10-26 (option b): the software may set DMX mode and
-start address on the device. Safeguards:
-* SET only for the PIDs in :data:`ALLOWED_SET_PIDS`
-* SET only with active write permission (``write_enabled = True``, per session)
-* Discovery commands are never sent
-Any other write request is rejected before sending (:class:`WriteLockError`).
+* By default any PID may be SET, but only after the session's write permission
+  has been granted (``write_enabled = True``).
+* ``WritePolicy.lab()`` restores the measurement-lab profile: SET only for
+  :data:`LAB_SET_PIDS` (DMX mode, start address, identify).
+* ``WritePolicy(require_write_enabled=False)`` drops the per-session permission (scripts).
+* Discovery commands are never sent, whatever the policy.
+
+Any write request the policy rejects fails before sending (:class:`WriteLockError`).
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from dataclasses import dataclass
 
 from . import constants as C
 from . import pdu as P
@@ -26,11 +29,56 @@ class RdmError(Exception):
     """Base class of all errors of an RDM request."""
 
 
-ALLOWED_SET_PIDS = frozenset({C.PID_DMX_PERSONALITY, C.PID_DMX_START_ADDRESS, C.PID_IDENTIFY_DEVICE})
+# measurement-lab profile: the software only sets DMX mode and start address on the device (and may identify it)
+LAB_SET_PIDS = frozenset({C.PID_DMX_PERSONALITY, C.PID_DMX_START_ADDRESS, C.PID_IDENTIFY_DEVICE})
+# lab profile for LLRP: only what is needed to bring a component to the right broker (E1.33 5.7)
+LLRP_LAB_SET_PIDS = frozenset({C.PID_COMPONENT_SCOPE, C.PID_SEARCH_DOMAIN, C.PID_IDENTIFY_DEVICE})
 
 
 class WriteLockError(RdmError):
-    """A writing RDM command is not allowed (PID not permitted or no write permission)."""
+    """A writing RDM command is not allowed (PID not permitted, no write permission or discovery)."""
+
+
+@dataclass(frozen=True)
+class WritePolicy:
+    """Which RDM SET commands a controller (RDMnet, Art-Net or LLRP manager) may send.
+
+    ``allowed_set_pids``: ``None`` = any PID, otherwise only these.
+    ``require_write_enabled``: SET only after ``write_enabled = True`` for the session.
+    Discovery commands (DISC_UNIQUE_BRANCH, MUTE, UN_MUTE) are never sent: on RDMnet the
+    gateway runs discovery itself.
+    """
+
+    allowed_set_pids: frozenset[int] | None = None
+    require_write_enabled: bool = True
+
+    def __post_init__(self):
+        if self.allowed_set_pids is not None:
+            object.__setattr__(self, "allowed_set_pids", frozenset(self.allowed_set_pids))
+
+    @classmethod
+    def lab(cls) -> "WritePolicy":
+        """Measurement lab: SET only for DMX_PERSONALITY, DMX_START_ADDRESS, IDENTIFY_DEVICE."""
+        return cls(LAB_SET_PIDS)
+
+    @classmethod
+    def llrp_lab(cls) -> "WritePolicy":
+        """LLRP in the lab: SET only for COMPONENT_SCOPE, SEARCH_DOMAIN, IDENTIFY_DEVICE."""
+        return cls(LLRP_LAB_SET_PIDS)
+
+    def allows(self, pid: int) -> bool:
+        return self.allowed_set_pids is None or pid in self.allowed_set_pids
+
+    def check(self, command_class: int, pid: int, write_enabled: bool, via: str = "") -> None:
+        """Raises :class:`WriteLockError` if the command must not be sent."""
+        if command_class == C.CC_GET:
+            return
+        if command_class != C.CC_SET:
+            raise WriteLockError("Discovery commands are never sent (the gateway runs discovery)")
+        if not self.allows(pid):
+            raise WriteLockError(f"SET of {C.PID_NAMES.get(pid, hex(pid))}{via} is not permitted by the write policy")
+        if self.require_write_enabled and not write_enabled:
+            raise WriteLockError("No write permission for this session")
 
 
 class RdmTimeoutError(RdmError):
@@ -55,7 +103,7 @@ class RdmResponseError(RdmError):
 
 class RdmnetController(RptClient):
     def __init__(self, uid: Uid | None = None, scope: str = C.E133_DEFAULT_SCOPE, cid: uuid.UUID | None = None,
-                 **kwargs):
+                 write_policy: WritePolicy | None = None, **kwargs):
         # default: request a dynamic UID in the ESTA prototype range
         uid = uid or Uid(0x8000 | C.ESTA_PROTOTYPE_MANUFACTURER, 0)
         super().__init__(C.RPT_CLIENT_TYPE_CONTROLLER, uid, scope, cid, incremental=True, **kwargs)
@@ -68,6 +116,7 @@ class RdmnetController(RptClient):
         self.ack_timer_max_s = 10.0
         self.ack_overflow_max = 32
         self.write_enabled = False  # enable explicitly per session (on-site checklist)
+        self.write_policy = write_policy or WritePolicy()
 
     # ----------------------------------------------------------------- Client list
     async def _after_connect(self) -> None:
@@ -148,14 +197,7 @@ class RdmnetController(RptClient):
         return self._select_response(request, messages)
 
     def _check_write_permission(self, cc: int, pid: int) -> None:
-        if cc == C.CC_GET:
-            return
-        if cc != C.CC_SET:
-            raise WriteLockError("The measurement lab does not send discovery commands")
-        if pid not in ALLOWED_SET_PIDS:
-            raise WriteLockError(f"SET for {C.PID_NAMES.get(pid, hex(pid))} not permitted")
-        if not self.write_enabled:
-            raise WriteLockError("No write permission for this session")
+        self.write_policy.check(cc, pid, self.write_enabled)
 
     @staticmethod
     def _select_response(request: RdmMessage, messages: list[bytes]) -> RdmMessage:
@@ -182,7 +224,7 @@ class RdmnetController(RptClient):
     async def rdm_set(self, rpt_dest: Uid, pid: int, data: bytes, endpoint: int = C.E133_NULL_ENDPOINT,
                       rdm_dest: Uid | None = None, subdevice: int = C.RDM_ROOT_DEVICE,
                       timeout_s: float = 3.0) -> bytes:
-        """RDM SET - only for ALLOWED_SET_PIDS and with active write permission."""
+        """RDM SET - as far as the write policy allows (default: any PID, after the write permission)."""
         self._check_write_permission(C.CC_SET, pid)
         return await self._rdm_command(C.CC_SET, rpt_dest, pid, data, endpoint, rdm_dest, subdevice, timeout_s)
 

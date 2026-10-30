@@ -38,7 +38,7 @@ from . import constants as C
 from .readout import DeviceReader, DeviceAddress, DeviceProfile, SensorSnapshot, now_utc
 from .broker import BrokerConfig, RdmnetBroker
 from .client import RdmnetConnectionError
-from .controller import RdmnetController
+from .controller import RdmnetController, WritePolicy
 from .rdm import Uid
 from .storage import RdmStore
 
@@ -62,6 +62,8 @@ class RdmConfig:
     heartbeat_interval_s: float = C.E133_HEARTBEAT_INTERVAL_S
     heartbeat_timeout_s: float = C.E133_HEARTBEAT_TIMEOUT_S
     reconnect_wait_s: float = 10.0  # how long a call waits for the automatic reconnection to the broker
+    # which SETs are allowed; WritePolicy.lab() = only DMX mode, start address, identify (measurement lab)
+    write_policy: WritePolicy = field(default_factory=WritePolicy)
     # V0.21.12 (S11): RDM over Art-Net instead of RDMnet (no broker); target = node IP or broadcast
     transport: str = "RDMNET"  # "RDMNET" | "ARTNET"
     artnet_target_ip: str | None = None
@@ -111,7 +113,7 @@ class RdmModule:
             if not k.artnet_target_ip:
                 raise ValueError("Art-Net RDM needs a target IP (node or broadcast)")
             self.controller = ArtnetRdmController(k.artnet_target_ip, uid=k.controller_uid, bind=k.artnet_bind,
-                                                  target_port=k.artnet_target_port)
+                                                  target_port=k.artnet_target_port, write_policy=k.write_policy)
             await self.controller.connect()
             return
         port = k.broker_port
@@ -131,7 +133,7 @@ class RdmModule:
 
     async def _connect_controller(self) -> None:
         k = self.config
-        self.controller = RdmnetController(uid=k.controller_uid, scope=k.scope,
+        self.controller = RdmnetController(uid=k.controller_uid, scope=k.scope, write_policy=k.write_policy,
                                            heartbeat_interval_s=k.heartbeat_interval_s,
                                            heartbeat_timeout_s=k.heartbeat_timeout_s)
         await self.controller.connect(k.broker_host if k.broker_host != "0.0.0.0" else "127.0.0.1", self.port,

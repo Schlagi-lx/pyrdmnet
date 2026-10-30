@@ -15,7 +15,7 @@ through a synchronous interface.
 
 | | |
 |---|---|
-| Software tests | 187/187 passing on Linux, macOS and Windows (Python 3.10–3.13, standard library only) |
+| Software tests | 195/195 passing on Linux, macOS and Windows (Python 3.10–3.13, standard library only) |
 | Real-world test | with an **LSS MasterPort 2** (firmware 2.13) as RDMnet gateway and an **ETC ColorSource PAR**: broker discovery via mDNS, connection, finding devices, reading, setting mode/start address and reading back (tested with 0.4) |
 | Other gateways/devices | not tested – feedback welcome |
 
@@ -50,13 +50,22 @@ No E1.33 conformance testing, no certification. Use at your own risk (see licens
 
 ## Write safety
 
-The module only reads by default. Writing is deliberately narrow:
+The module only reads by default. Which RDM SET commands may be sent is set by a `WritePolicy` (controller,
+Art-Net controller, LLRP manager, `RdmConfig.write_policy`):
 
-- only `DMX_PERSONALITY`, `DMX_START_ADDRESS` and `IDENTIFY_DEVICE` (over LLRP: `COMPONENT_SCOPE`, `SEARCH_DOMAIN`,
-  `IDENTIFY_DEVICE`)
-- only after explicit write permission per session
-- every change is read back and logged as old → new
-- the module never sends discovery commands (`DISC_*`); discovery is done by the gateway
+- default `WritePolicy()`: any PID, but only after explicit write permission per session (`write_enabled = True`,
+  facade: `set_write_enabled(True)`)
+- `WritePolicy.lab()`: measurement-lab profile, only `DMX_PERSONALITY`, `DMX_START_ADDRESS` and `IDENTIFY_DEVICE`;
+  `WritePolicy.llrp_lab()`: over LLRP only `COMPONENT_SCOPE`, `SEARCH_DOMAIN` and `IDENTIFY_DEVICE`
+- own lists: `WritePolicy({C.PID_DEVICE_LABEL, ...})`; for scripts without the per-session permission:
+  `WritePolicy(require_write_enabled=False)`
+- the settings workflow reads every change back and logs it as old → new
+- the module never sends discovery commands (`DISC_*`), whatever the policy; discovery is done by the gateway
+
+```python
+from pyrdmnet.controller import WritePolicy
+module = RdmModule(RdmConfig(broker_host=adapter_ip, write_policy=WritePolicy.lab()))
+```
 
 ## Quick start
 

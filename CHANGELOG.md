@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Changed: RDM SET is governed by a `WritePolicy`** instead of the hard-wired `ALLOWED_SET_PIDS` (removed).
+  Default `WritePolicy()`: any PID may be set, still only after the per-session write permission.
+  `WritePolicy.lab()` restores the previous rule (only `DMX_PERSONALITY`, `DMX_START_ADDRESS`, `IDENTIFY_DEVICE`),
+  `WritePolicy.llrp_lab()` the previous LLRP rule (`COMPONENT_SCOPE`, `SEARCH_DOMAIN`, `IDENTIFY_DEVICE`).
+  Own lists via `WritePolicy({...})`; `require_write_enabled=False` drops the per-session permission. Discovery
+  commands stay blocked under every policy. Set via `write_policy=` on `RdmnetController`, `ArtnetRdmController`,
+  `LlrpManager` and `RdmConfig`. GelMatch should use `WritePolicy.lab()` (see the migration guide).
+- Simulator fixture accepts SET `DEVICE_LABEL`.
 - LLRP over IPv6 (E1.33 5.3): the manager listens on and sends to the IPv4 and IPv6 groups (`ff18::85:0:0:85` /
   `ff18::85:0:0:86`); targets (also the broker with `--llrp`) listen on both and answer over the family a request
   came in on. A request received over both families is handled only once, so an RDM SET is never executed twice.

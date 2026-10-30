@@ -22,7 +22,7 @@ import struct
 
 from . import constants as C
 from .readout import DeviceAddress
-from .controller import RdmnetController, RdmTimeoutError
+from .controller import RdmnetController, RdmTimeoutError, WritePolicy
 from .rdm import RdmMessage, TransactionCounter, Uid
 
 ARTNET_ID = b'Art-Net\x00'
@@ -107,13 +107,15 @@ class ArtnetRdmController:
     _check_write_permission = RdmnetController._check_write_permission
     _select_response = staticmethod(RdmnetController._select_response)
 
-    def __init__(self, target_ip, *, uid=None, bind=('0.0.0.0', ARTNET_PORT), target_port=ARTNET_PORT):
+    def __init__(self, target_ip, *, uid=None, bind=('0.0.0.0', ARTNET_PORT), target_port=ARTNET_PORT,
+                 write_policy: WritePolicy | None = None):
         self.target_ip, self.target_port, self.bind = target_ip, target_port, bind
         self.uid = uid or Uid(C.ESTA_PROTOTYPE_MANUFACTURER, random.randrange(1, 0xFFFFFFFE))
         self._tn = TransactionCounter()
         self.ack_timer_max_s = 10.0
         self.ack_overflow_max = 32
         self.write_enabled = False
+        self.write_policy = write_policy or WritePolicy()
         self.transport = None
         self.tod = {}                 # Uid -> (node_ip, port_address)
         self._tod_new = None

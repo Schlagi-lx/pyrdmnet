@@ -5,8 +5,9 @@ RDMnet components (e.g. a gateway with the wrong scope) and to read and set
 their scope, search domain or a static broker address.
 
 * :class:`LlrpManager` - discovery per E1.33 5.6.3 and RDM GET/SET to targets.
-  SET only for ``ALLOWED_SET_PIDS`` and only with write permission; every change
-  is read back.
+  SET as the :class:`WritePolicy` allows (default: any PID after the write
+  permission; ``WritePolicy.llrp_lab()``: scope, search domain, identify only).
+  Scope and search domain changes are read back.
 * :class:`LlrpTarget` - answers probe requests and RDM commands; used by the
   broker (``BrokerConfig.llrp``) and in tests.
 
@@ -34,7 +35,7 @@ from typing import Callable
 from . import constants as C
 from . import pdu as P
 from . import rdm_params as R
-from .controller import RdmResponseError, RdmNackError, RdmTimeoutError, WriteLockError
+from .controller import RdmNackError, RdmResponseError, RdmTimeoutError, WriteLockError, WritePolicy
 from .rdm import RdmFormatError, RdmMessage, TransactionCounter, Uid
 
 log = logging.getLogger("pyrdmnet.llrp")
@@ -42,7 +43,6 @@ log = logging.getLogger("pyrdmnet.llrp")
 BROADCAST_CID = uuid.UUID(C.LLRP_BROADCAST_CID)
 UID_MIN, UID_MAX = 0, (1 << 48) - 1
 DUPLICATE_WINDOW_S = 2 * C.LLRP_TIMEOUT_S  # same request received over IPv4 and IPv6
-ALLOWED_SET_PIDS = {C.PID_COMPONENT_SCOPE, C.PID_SEARCH_DOMAIN, C.PID_IDENTIFY_DEVICE}
 
 
 # ------------------------------------------------------------------- Encoding
@@ -359,7 +359,8 @@ class LlrpManager:
     """
 
     def __init__(self, network: LlrpNetwork | None = None, uid: Uid | None = None, cid: uuid.UUID | None = None,
-                 timeout_window_s: float = C.LLRP_TIMEOUT_S, retries: int = 1):
+                 timeout_window_s: float = C.LLRP_TIMEOUT_S, retries: int = 1,
+                 write_policy: WritePolicy | None = None):
         self.network = network or LlrpNetwork()
         # E1.33 5.6.1: the manager UID may be dynamic; it is only used in RDM commands
         self.uid = uid or Uid(0x8000 | C.ESTA_PROTOTYPE_MANUFACTURER, 0x4C4C5250)  # "LLRP"
@@ -367,6 +368,7 @@ class LlrpManager:
         self.timeout_window_s = timeout_window_s
         self.retries = retries
         self.write_enabled = False
+        self.write_policy = write_policy or WritePolicy()
         self.protocol: list[dict] = []  # changes old -> new
         self._tn = 0
         self._rdm_tn = TransactionCounter()
@@ -463,10 +465,7 @@ class LlrpManager:
         return await self._rdm(target, C.CC_GET, pid, data)
 
     async def rdm_set(self, target: DiscoveredTarget, pid: int, data: bytes) -> bytes:
-        if pid not in ALLOWED_SET_PIDS:
-            raise WriteLockError(f"SET of {C.PID_NAMES.get(pid, hex(pid))} via LLRP is not allowed")
-        if not self.write_enabled:
-            raise WriteLockError("No write permission for this session")
+        self.write_policy.check(C.CC_SET, pid, self.write_enabled, via=" via LLRP")
         return await self._rdm(target, C.CC_SET, pid, data)
 
     async def _rdm(self, target: DiscoveredTarget, cc: int, pid: int, data: bytes) -> bytes:
