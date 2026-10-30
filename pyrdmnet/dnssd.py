@@ -7,10 +7,11 @@ TxtVers, E133Scope, E133Vers, CID (without hyphens), UID (without
 colon), Model, Manuf.
 
 Methods (in this order):
-1. ``dns-sd`` (Bonjour) - always present on macOS, on Windows with
-   Bonjour. Uses the system mDNS service, registers on all adapters
-   and supports subtypes. Recommended.
-2. Python package ``zeroconf`` (Linux/Windows without Bonjour). Subtype
+1. ``dns-sd`` (Bonjour) - always present on macOS; on Windows when Apple's
+   Bonjour service is installed (e.g. "Bonjour Print Services for Windows" or
+   iTunes). Uses the system mDNS service, registers on all adapters and
+   supports subtypes. Recommended.
+2. Python package ``zeroconf`` (Linux, Windows without Bonjour). Subtype
    registration untested here.
 """
 
@@ -72,10 +73,13 @@ class DnssdRegistration:
 
     # --- Bonjour
     def _with_dns_sd(self) -> None:
-        if not shutil.which("dns-sd"):
+        path = shutil.which("dns-sd")
+        if not path:
             raise RuntimeError("Command 'dns-sd' not found (Bonjour)")
-        self._proc = subprocess.Popen(dns_sd_command(self.scope, self.cid, self.uid, self.port),
-                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        # start via the resolved path: on Windows this also covers dns-sd.exe / .cmd outside the default search
+        command = [path, *dns_sd_command(self.scope, self.cid, self.uid, self.port)[1:]]
+        self._proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                      encoding="utf-8", errors="replace")
         threading.Thread(target=self._read_output, daemon=True).start()
         # wait for confirmation ("Name now registered and active")
         end = time.monotonic() + 5
@@ -112,9 +116,10 @@ class DnssdRegistration:
         """Looks up our own service via the scope subtype (dns-sd only). Returns the matching lines."""
         if self.method != "dns-sd":
             return []
-        command = ["dns-sd", "-B", f"{SERVICE_TYPE},_{self.scope}", "local."]
+        command = [shutil.which("dns-sd") or "dns-sd", "-B", f"{SERVICE_TYPE},_{self.scope}", "local."]
         try:
-            p = subprocess.run(command, capture_output=True, text=True, timeout=duration_s)
+            p = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                               timeout=duration_s)
             text = p.stdout
         except subprocess.TimeoutExpired as t:  # dns-sd -B runs forever; a timeout is the normal case
             text = t.stdout.decode() if isinstance(t.stdout, bytes) else (t.stdout or "")

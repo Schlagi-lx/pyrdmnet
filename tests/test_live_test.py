@@ -8,7 +8,8 @@ import unittest
 from pathlib import Path
 
 from pyrdmnet import settings_check as A
-from pyrdmnet.live_test import LiveConfig, LiveTest, choose_adapter, ip_is_local, network_adapters
+from pyrdmnet.live_test import (LiveConfig, LiveTest, choose_adapter, ip_is_local, network_adapters, parse_ip_addr,
+                                parse_ipconfig)
 from pyrdmnet.simulator import SimulatedGateway
 
 
@@ -124,6 +125,31 @@ class TestAdapter(unittest.TestCase):
                 "\tinet 2.0.0.10 netmask 0xff000000 broadcast 2.255.255.255\n")
         self.assertEqual(network_adapters(text), [("lo0", "127.0.0.1"), ("en0", "192.168.178.20"),
                                                  ("en7", "2.0.0.10")])
+
+    def test_ipconfig_windows_german(self):
+        text = ("\r\nWindows-IP-Konfiguration\r\n\r\n\r\nEthernet-Adapter Ethernet:\r\n\r\n"
+                "   Verbindungsspezifisches DNS-Suffix: fritz.box\r\n"
+                "   Verbindungslokale IPv6-Adresse  . : fe80::1c2d:3e4f:5a6b:7c8d%12\r\n"
+                "   IPv4-Adresse  . . . . . . . . . . : 192.168.178.20\r\n"
+                "   Subnetzmaske  . . . . . . . . . . : 255.255.255.0\r\n"
+                "   Standardgateway . . . . . . . . . : 192.168.178.1\r\n\r\n"
+                "Drahtlos-LAN-Adapter WLAN:\r\n\r\n"
+                "   Medienstatus. . . . . . . . . . . : Medium getrennt\r\n\r\n"
+                "Ethernet-Adapter Ethernet 2:\r\n\r\n"
+                "   IPv4-Adresse  . . . . . . . . . . : 2.0.0.10\r\n")
+        self.assertEqual(parse_ipconfig(text), [("Ethernet-Adapter Ethernet", "192.168.178.20"),
+                                                ("Ethernet-Adapter Ethernet 2", "2.0.0.10")])
+
+    def test_ipconfig_windows_english(self):
+        text = ("Windows IP Configuration\n\nEthernet adapter Ethernet:\n\n"
+                "   IPv4 Address. . . . . . . . . . . : 10.0.0.5(Preferred)\n"
+                "   Subnet Mask . . . . . . . . . . . : 255.0.0.0\n")
+        self.assertEqual(parse_ipconfig(text), [("Ethernet adapter Ethernet", "10.0.0.5")])
+
+    def test_ip_addr_linux(self):
+        text = ("1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever preferred_lft forever\n"
+                "2: eth0    inet 192.168.1.10/24 brd 192.168.1.255 scope global eth0\\       valid_lft forever\n")
+        self.assertEqual(parse_ip_addr(text), [("lo", "127.0.0.1"), ("eth0", "192.168.1.10")])
 
     def test_selection(self):
         group = [(n, ip) for n, ip in network_adapters() if not ip.startswith("127.")]

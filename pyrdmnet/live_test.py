@@ -22,6 +22,7 @@ import platform
 import re
 import socket
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,23 +37,71 @@ from .storage import RdmStore
 
 
 # ------------------------------------------------------------------- Network adapters
-def network_adapters(text: str | None = None) -> list[tuple[str, str]]:
-    """(name, IPv4) of all adapters that have an address, via ifconfig (macOS/Linux)."""
-    if text is None:
-        try:
-            text = subprocess.run(["ifconfig"], capture_output=True, text=True, timeout=5).stdout
-        except (OSError, subprocess.SubprocessError):
-            return []
-    adapter, name = [], None
+_IPV4 = r"(\d+\.\d+\.\d+\.\d+)"
+
+
+def _run_text(command: list[str]) -> str | None:
+    try:
+        p = subprocess.run(command, capture_output=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    # ipconfig writes in the console code page; only names may suffer, addresses are ASCII
+    return p.stdout.decode("utf-8", errors="replace") if p.returncode == 0 else None
+
+
+def parse_ifconfig(text: str) -> list[tuple[str, str]]:
+    """``ifconfig`` output (macOS, older Linux)."""
+    adapters, name = [], None
     for line in text.splitlines():
         m = re.match(r"^([A-Za-z0-9_.\-]+):? ", line)
         if m and not line.startswith((" ", "\t")):
             name = m.group(1).rstrip(":")
             continue
-        m = re.search(r"\binet (?:addr:)?(\d+\.\d+\.\d+\.\d+)", line)
+        m = re.search(r"\binet (?:addr:)?" + _IPV4, line)
         if m and name:
-            adapter.append((name, m.group(1)))
-    return adapter
+            adapters.append((name, m.group(1)))
+    return adapters
+
+
+def parse_ip_addr(text: str) -> list[tuple[str, str]]:
+    """``ip -4 -o addr show`` output (Linux without ifconfig)."""
+    adapters = []
+    for line in text.splitlines():
+        m = re.match(r"^\d+:\s+(\S+)\s+inet\s+" + _IPV4, line)
+        if m:
+            adapters.append((m.group(1), m.group(2)))
+    return adapters
+
+
+def parse_ipconfig(text: str) -> list[tuple[str, str]]:
+    """``ipconfig`` output (Windows, any display language: matches the "IPv4" line of each adapter)."""
+    adapters, name = [], None
+    for line in text.splitlines():
+        if line and not line[0].isspace() and line.rstrip().endswith(":"):
+            name = line.rstrip()[:-1].strip()
+            continue
+        m = re.search(r"IPv4[^:]*:\s*" + _IPV4, line)
+        if m and name:
+            adapters.append((name, m.group(1)))
+    return adapters
+
+
+def network_adapters(text: str | None = None) -> list[tuple[str, str]]:
+    """(name, IPv4) of all adapters that have an address.
+
+    Windows: ``ipconfig``; macOS/Linux: ``ifconfig``, falling back to ``ip -4 -o addr show``.
+    ``text`` (ifconfig format) is only used by tests.
+    """
+    if text is not None:
+        return parse_ifconfig(text)
+    if sys.platform == "win32":
+        out = _run_text(["ipconfig"])
+        return parse_ipconfig(out) if out else []
+    out = _run_text(["ifconfig"])
+    if out and (adapters := parse_ifconfig(out)):
+        return adapters
+    out = _run_text(["ip", "-4", "-o", "addr", "show"])
+    return parse_ip_addr(out) if out else []
 
 
 def ip_is_local(ip: str) -> bool:
@@ -295,11 +344,16 @@ class LiveTest:
     def _diagnostic_hints(self, broker: RdmnetBroker) -> None:
         kinds = [e["event"] for e in broker.events]
         if "tcp_connection" not in kinds:
+            firewall = {"win32": "Windows Defender Firewall allows Python on this network (the network profile "
+                                 "must not be 'Public', or allow TCP port " + str(self.k.port) + " inbound)",
+                        "darwin": "macOS firewall allows incoming connections for Python"}.get(
+                sys.platform, "the firewall allows incoming TCP connections on port " + str(self.k.port))
             for t in ("No TCP connection received. Check: RDMnet enabled in the MasterPort, broker IP/port entered "
-                      "correctly, same network, macOS firewall allows incoming connections for Python.",
-                      "mDNS: the scope in the MasterPort must match exactly (case-sensitive); Mac and "
-                      "MasterPort in the same subnet; run \"dns-sd -B _rdmnet._tcp\" in a terminal to check whether "
-                      "the broker is visible. If necessary use --no-mdns and enter the address statically."):
+                      f"correctly, same network, {firewall}.",
+                      "mDNS: the scope in the MasterPort must match exactly (case-sensitive); this computer and "
+                      "the MasterPort in the same subnet; run \"dns-sd -B _rdmnet._tcp\" in a terminal to check whether "
+                      "the broker is visible (Windows: requires Bonjour, otherwise pip install zeroconf). If necessary "
+                      "use --no-mdns and enter the address statically."):
                 self._hint(t)
         elif "connect_rejected" in kinds:
             self._hint("Connection was rejected - see reason above (usually the scope). Scope in the MasterPort "

@@ -15,7 +15,7 @@ through a synchronous interface.
 
 | | |
 |---|---|
-| Software tests | 149/149 passing (Python 3.10–3.13, standard library only) |
+| Software tests | 152/152 passing on Linux, macOS and Windows (Python 3.10–3.13, standard library only) |
 | Real-world test | with an **LSS MasterPort 2** (firmware 2.13) as RDMnet gateway and an **ETC ColorSource PAR**: broker discovery via mDNS, connection, finding devices, reading, setting mode/start address and reading back (tested with 0.4) |
 | Other gateways/devices | not tested – feedback welcome |
 
@@ -96,6 +96,19 @@ python3 -m pyrdmnet llrp --adapter 192.168.1.10 --uid 7ff0:00000100 \
 On a real network, set `--host` to the IP of the network adapter and register via mDNS with `--dnssd`. On the
 gateway, set broker discovery to mDNS and enter the same scope (default: `default`, case-sensitive). Avoid competing
 brokers in the same scope.
+
+### Windows
+
+pyrdmnet runs on Windows with the standard Python from python.org (tested in CI with Python 3.10–3.13). Points to
+note:
+
+- **mDNS:** broker registration (`--dnssd`, default for `livetest`/`writetest`) needs either Apple's Bonjour
+  service (provides `dns-sd`, e.g. "Bonjour Print Services for Windows") or the `zeroconf` package:
+  `pip install ".[zeroconf]"`. Without either, use `--no-mdns` and enter the broker address in the gateway.
+- **Firewall:** on the first broker start, Windows Defender Firewall asks whether Python may accept connections.
+  Allow it for the network the gateway is on. If that network is classified as "Public", either change it to
+  "Private" or allow inbound TCP 8888 (broker), UDP 5569 (LLRP) and UDP 6454 (Art-Net) for Python.
+- **Adapter selection:** `livetest`/`writetest` without `--host` list the adapters from `ipconfig`.
 
 ## Embedding in your own programs
 

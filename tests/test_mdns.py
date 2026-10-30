@@ -2,6 +2,7 @@
 
 import os
 import stat
+import sys
 import tempfile
 import unittest
 import uuid
@@ -13,21 +14,36 @@ from pyrdmnet.rdm import Uid
 
 CID = uuid.UUID("12345678-90ab-cdef-1234-567890abcdef")
 
-# Fake macOS dns-sd: -R reports success and keeps running, -B lists the service
-FAKE = r'''#!/bin/sh
-if [ "$1" = "-R" ]; then
-  echo "$@" > "$(dirname "$0")/call.txt"
-  echo "$2" > "$(dirname "$0")/name.txt"
-  echo "Registering Service $2.$3 port $5"
-  echo "Got a reply for service $2.$3local.: Name now registered and active"
-  exec sleep 30
-fi
-if [ "$1" = "-B" ]; then
-  echo "Browsing for $2"
-  echo "12:00:00.000  Add        3   4 local.               _rdmnet._tcp.        $(cat "$(dirname "$0")/name.txt")"
-  exec sleep 30
-fi
+# Fake dns-sd as a Python script (runs on macOS, Linux and Windows): -R reports success and keeps
+# running, -B lists the service. On Windows it is started through a dns-sd.cmd wrapper.
+FAKE = r'''
+import pathlib, sys, time
+here = pathlib.Path(__file__).resolve().parent
+args = sys.argv[1:]
+wait = 3 if sys.platform == "win32" else 30  # Windows: the wrapper's child outlives terminate(); keep it short
+if args[0] == "-R":
+    (here / "call.txt").write_text(" ".join(args))
+    (here / "name.txt").write_text(args[1])
+    print(f"Registering Service {args[1]}.{args[2]} port {args[4]}", flush=True)
+    print(f"Got a reply for service {args[1]}.{args[2]}local.: Name now registered and active", flush=True)
+    time.sleep(wait)
+elif args[0] == "-B":
+    print("Browsing for", args[1], flush=True)
+    print("12:00:00.000  Add        3   4 local.               _rdmnet._tcp.        "
+          + (here / "name.txt").read_text(), flush=True)
+    if sys.platform != "win32":
+        time.sleep(wait)
 '''
+
+
+def install_fake(folder: Path) -> None:
+    if sys.platform == "win32":
+        (folder / "fake_dns_sd.py").write_text(FAKE)
+        (folder / "dns-sd.cmd").write_text(f'@"{sys.executable}" "%~dp0fake_dns_sd.py" %*\r\n')
+    else:
+        path = folder / "dns-sd"
+        path.write_text(f"#!{sys.executable}\n" + FAKE)
+        path.chmod(path.stat().st_mode | stat.S_IEXEC)
 
 
 class TestCommand(unittest.TestCase):
@@ -52,10 +68,8 @@ class TestCommand(unittest.TestCase):
 
 class TestWithFakeDnsSd(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        path = Path(self.tmp.name) / "dns-sd"
-        path.write_text(FAKE)
-        path.chmod(path.stat().st_mode | stat.S_IEXEC)
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        install_fake(Path(self.tmp.name))
         self.env = mock.patch.dict(os.environ, {"PATH": f"{self.tmp.name}{os.pathsep}{os.environ['PATH']}"})
         self.env.start()
 
