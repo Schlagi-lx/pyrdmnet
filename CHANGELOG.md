@@ -7,6 +7,8 @@
   EPT data. Blocks with PDU inheritance (e.g. one message to several CIDs, Appendix D.9) are split per destination
   and forwarded complete; unknown vectors and CIDs are answered with EPT status messages. Sender CIDs are checked.
 - New module `ept.py` with EPT encoding and `EptClient`.
+- Windows support: tests run on Windows in CI; adapter list via `ipconfig` (Windows) and `ip` (Linux without
+  `ifconfig`); `dns-sd` started via its resolved path; firewall hints per platform; README section for Windows.
 - `ClientEntry` carries EPT sub-protocols (`ept_protocols`, `ClientEntry.ept()`); `type_text` is "EPT" for them.
 
 ## 0.5.0

@@ -20,6 +20,7 @@
 
 ## Tests / maintenance
 
+- [x] 9a. Windows support: tests on Windows in CI, adapter list (ipconfig/ip), portable mDNS test, docs
 - [ ] 10. Reduce test run time (currently about 100 s): replace fixed waits with events
 - [x] 11. README: replace the `<konto>` placeholder in the clone command
 - [x] 12a. Translate the project to English (0.5.0)
