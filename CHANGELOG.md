@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- `TCP_COMMS_STATUS` (E1.33 7.6.3): RPT clients count unhealthy TCP connections (heartbeat timeout) per scope and
+  report scope, broker address and count; SET resets the count (NACK `UNKNOWN_SCOPE` for another scope).
+  `RdmnetController.read_tcp_comms_status()` / `reset_tcp_comms_status()`; `TcpCommsEntry` in `rdm_params`.
+- Default responder of controllers (E1.33 7.4.8, 7.4.9) in the new module `client_responder.py`: the controller
+  answers RDM requests addressed to it (IDENTIFY_DEVICE, SUPPORTED_PARAMETERS, PARAMETER_DESCRIPTION, labels,
+  DEVICE_INFO, COMPONENT_SCOPE, SEARCH_DOMAIN, TCP_COMMS_STATUS). The broker now forwards requests to controllers too
+  (9.2.7); before, it answered them with Unknown RPT UID.
+- The simulator's default responder adds COMPONENT_SCOPE, SEARCH_DOMAIN, TCP_COMMS_STATUS and PARAMETER_DESCRIPTION.
+  SET COMPONENT_SCOPE via RDMnet changes the scope (and static broker) of a client; it sends Disconnect with
+  `DISCONNECT_RPT_RECONFIGURE` and, with automatic reconnection, joins the new scope. The client uses its search
+  domain in Client Connect.
+- Fix: the broker's SUPPORTED_PARAMETERS now lists the required PIDs too (E1.33 7.2.1 differs from E1.20 here), it
+  answers PARAMETER_DESCRIPTION, and its product category is DATA_DISTRIBUTION (0x0801, was 0x0700).
+- New constants: NACK reason codes of E1.33 table A-16, disconnect reason codes of table A-24.
 - **Changed: RDM SET is governed by a `WritePolicy`** instead of the hard-wired `ALLOWED_SET_PIDS` (removed).
   Default `WritePolicy()`: any PID may be set, still only after the per-session write permission.
   `WritePolicy.lab()` restores the previous rule (only `DMX_PERSONALITY`, `DMX_START_ADDRESS`, `IDENTIFY_DEVICE`),

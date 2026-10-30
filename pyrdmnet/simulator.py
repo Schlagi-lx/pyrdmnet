@@ -21,6 +21,7 @@ from . import constants as C
 from . import pdu as P
 from . import rdm_params as R
 from .client import RptClient
+from .client_responder import E133_CLIENT_PIDS, ClientResponder
 from .rdm import RdmFormatError, RdmMessage, Uid, is_device_broadcast
 
 
@@ -221,6 +222,22 @@ class SimulatedGateway(RptClient):
                                                  sensors=[SimSensor(R.SensorDefinition(
                                                      0, 0x00, 0x01, 0x00, -20, 90, 0, 60, 0x00, "Gateway"), 31.0)])
 
+        self.client_responder = ClientResponder(self, model="SIM Gateway 1 Port")
+
+    def _default_responder(self, fixture: SimFixture, a: RdmMessage) -> RdmMessage | None:
+        """Default responder (E1.33 7.2.1): the fixture plus the E1.33 management PIDs, PARAMETER_DESCRIPTION
+        and a SUPPORTED_PARAMETERS list that includes the required PIDs."""
+        if a.pid in E133_CLIENT_PIDS and not a.dest.is_broadcast:
+            return self.client_responder.respond_e133(a)
+        if a.command_class == C.CC_GET and not a.dest.is_broadcast:
+            if a.pid == C.PID_PARAMETER_DESCRIPTION:  # no manufacturer-specific PIDs
+                return a.response(C.RESPONSE_NACK, struct.pack(">H", C.NR_DATA_OUT_OF_RANGE))
+            if a.pid == C.PID_SUPPORTED_PARAMETERS and a.dest == fixture.uid:
+                pids = dict.fromkeys([C.PID_SUPPORTED_PARAMETERS, C.PID_PARAMETER_DESCRIPTION, *fixture.pids(),
+                                      *E133_CLIENT_PIDS])
+                return a.response(C.RESPONSE_ACK, b"".join(struct.pack(">H", pid) for pid in pids))
+        return fixture.respond(a)
+
     async def _on_rpt(self, rpt: P.RptPdu) -> None:
         k = rpt.header
         if k.vector != C.VECTOR_RPT_REQUEST or self.mute:
@@ -239,14 +256,14 @@ class SimulatedGateway(RptClient):
         if isinstance(response, int):
             await self._status(k, response)
             return
-        rheader = P.RptHeader(C.VECTOR_RPT_NOTIFICATION, self.uid, k.dest_endpoint, k.source, C.E133_NULL_ENDPOINT,
-                          k.sequence)
-        await self.send_rpt(rheader, P.build_notification([raw, response.encode()]))
+        await self._send_rdm_response(k, raw, response)
 
     def _responder_reply(self, endpoint: int, a: RdmMessage) -> RdmMessage | int:
         if endpoint == C.E133_NULL_ENDPOINT:
             if self.native:
-                return self.fixture.respond(a) or C.RPT_STATUS_UNKNOWN_RDM_UID
+                if a.dest != self.uid:
+                    return C.RPT_STATUS_UNKNOWN_RDM_UID
+                return self._default_responder(self.fixture, a) or C.RPT_STATUS_UNKNOWN_RDM_UID
             if a.dest != self.uid:
                 return C.RPT_STATUS_UNKNOWN_RDM_UID
             if a.command_class == C.CC_GET and a.pid == C.PID_ENDPOINT_LIST:
@@ -264,7 +281,7 @@ class SimulatedGateway(RptClient):
                 if a.data != b"\x00\x01":
                     return a.response(C.RESPONSE_NACK, struct.pack(">H", C.NR_DATA_OUT_OF_RANGE))
                 return a.response(C.RESPONSE_ACK, struct.pack(">HH", 1, self.universe))
-            return self.gateway_responder.respond(a) or C.RPT_STATUS_UNKNOWN_RDM_UID
+            return self._default_responder(self.gateway_responder, a) or C.RPT_STATUS_UNKNOWN_RDM_UID
         if endpoint == 1 and not self.native:
             if a.dest != self.fixture.uid:
                 return C.RPT_STATUS_UNKNOWN_RDM_UID
@@ -272,5 +289,4 @@ class SimulatedGateway(RptClient):
         return C.RPT_STATUS_UNKNOWN_ENDPOINT
 
     async def _status(self, k: P.RptHeader, code: int) -> None:
-        rheader = P.RptHeader(C.VECTOR_RPT_STATUS, self.uid, k.dest_endpoint, k.source, C.E133_NULL_ENDPOINT, k.sequence)
-        await self.send_rpt(rheader, P.build_status(code))
+        await self._send_rpt_status(k, code)

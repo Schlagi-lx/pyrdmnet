@@ -6,11 +6,16 @@ applies that grows by a random 1-5 s whenever the TCP connection was established
 connect failed (capped at 30 s). Failed TCP connects do not grow the back-off; they are
 retried every ``reconnect_min_s`` (an implementation choice to avoid a busy loop).
 Client Redirect IPv4 (6.2.5.3.2) is followed during connect and while connected.
+
+RPT clients count unhealthy TCP connections (heartbeat timeout, 6.2.4.1.3) per scope for
+TCP_COMMS_STATUS (7.6.3) and keep the scope configuration that their default responder
+reports and changes (COMPONENT_SCOPE, SEARCH_DOMAIN, see :mod:`pyrdmnet.client_responder`).
 """
 
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import random
 import time
@@ -19,8 +24,9 @@ from typing import Callable
 
 from . import constants as C
 from . import pdu as P
-from .rdm import Uid
+from . import rdm_params as R
 from .connection import TcpConnection
+from .rdm import RdmMessage, Uid
 
 log = logging.getLogger("pyrdmnet.client")
 
@@ -73,6 +79,11 @@ class RptClient:
         self.target: tuple[str, int] | None = None  # current broker address (may change by redirect)
         self._connect_timeout_s = 5.0
         self._closing = False
+        # scope configuration and statistics (E1.33 7.6.1-7.6.3)
+        self.search_domain = C.E133_DEFAULT_DOMAIN
+        self.static_broker: tuple[str, int] | None = None  # static broker address of the scope, if configured
+        self.unhealthy_events: dict[str, int] = {}  # scope -> unhealthy TCP connections (16 bit, saturating)
+        self._background: set[asyncio.Task] = set()  # tasks that outlive one connection (scope change)
         self._supervisor: asyncio.Task | None = None
         self._is_connected = asyncio.Event()
         self._sleep = asyncio.sleep  # replaceable in tests (back-off timing)
@@ -161,7 +172,7 @@ class RptClient:
         v = TcpConnection(reader, writer, self.cid)
         entry = self._connect_entry()
         flags = C.BROKER_CONNECT_FLAG_INCREMENTAL if self.incremental else 0
-        cd = P.ConnectData(self.scope, C.E133_VERSION, C.E133_DEFAULT_DOMAIN, flags, entry)
+        cd = P.ConnectData(self.scope, C.E133_VERSION, self.search_domain, flags, entry)
         try:
             await v.send_broker(C.VECTOR_BROKER_CONNECT, cd.encode())
             roots = await asyncio.wait_for(v.read(), timeout_s)
@@ -324,7 +335,8 @@ class RptClient:
         while self.connected:
             await asyncio.sleep(tick)
             now = time.monotonic()
-            if now - self._v.last_received > self.heartbeat_timeout_s:
+            if now - self._v.last_received > self.heartbeat_timeout_s:  # 6.2.4.1.3: connection unhealthy
+                self.unhealthy_events[self.scope] = min(self.unhealthy_events.get(self.scope, 0) + 1, 0xFFFF)
                 await self._shutdown("Heartbeat timeout (broker not responding)")
                 return
             if now - self._v.last_sent >= self.heartbeat_interval_s:
@@ -333,6 +345,79 @@ class RptClient:
                 except (ConnectionError, OSError):
                     await self._shutdown("Send failed")
                     return
+
+    # --- Scope configuration and TCP_COMMS_STATUS (E1.33 7.6)
+    def component_scope(self) -> R.ComponentScope:
+        cs = R.ComponentScope(1, self.scope)
+        if self.static_broker:
+            host, cs.static_port = self.static_broker
+            address = ipaddress.ip_address(host)
+            if address.version == 6:
+                cs.static_type, cs.static_ipv6 = C.E133_STATIC_CONFIG_IPV6, address.packed
+            else:
+                cs.static_type, cs.static_ipv4 = C.E133_STATIC_CONFIG_IPV4, str(address)
+        return cs
+
+    def set_component_scope(self, cs: R.ComponentScope) -> None:
+        """New scope / static broker (SET COMPONENT_SCOPE). If it changes, the client leaves its broker;
+        with automatic reconnection it connects again in the new scope (to the static broker, if given)."""
+        static = None
+        if cs.static_type == C.E133_STATIC_CONFIG_IPV4:
+            static = (cs.static_ipv4, cs.static_port)
+        elif cs.static_type == C.E133_STATIC_CONFIG_IPV6:
+            static = (str(ipaddress.IPv6Address(cs.static_ipv6)), cs.static_port)
+        changed = (cs.scope, static) != (self.scope, self.static_broker)
+        self.scope, self.static_broker = cs.scope, static
+        if static:
+            self.target = static
+        if changed and self.connected:
+            log.info("Scope changed to %r (static broker %s): reconnecting", cs.scope, static)
+            # after the response to the SET has been sent
+            t = asyncio.get_running_loop().create_task(self._leave_broker(f"Scope changed to {cs.scope!r}"))
+            self._background.add(t)
+            t.add_done_callback(self._background.discard)
+
+    async def _leave_broker(self, reason: str) -> None:
+        await asyncio.sleep(0)
+        if self._v and not self._v.closed:
+            try:
+                await self._v.send_broker(C.VECTOR_BROKER_DISCONNECT,  # 7.6: reconfigured via RPT
+                                          C.E133_DISCONNECT_RPT_RECONFIGURE.to_bytes(2, "big"))
+            except (ConnectionError, OSError):
+                pass
+        await self._shutdown(reason)
+
+    def tcp_comms_entries(self) -> list[R.TcpCommsEntry]:
+        """TCP_COMMS_STATUS: one entry per scope (an RPT client of pyrdmnet has one)."""
+        e = R.TcpCommsEntry(self.scope, unhealthy_events=self.unhealthy_events.get(self.scope, 0))
+        if self.connected and self._v.peer_address:
+            host, e.broker_port = self._v.peer_address[0], self._v.peer_address[1]
+            address = ipaddress.ip_address(host.split("%", 1)[0])
+            if address.version == 6 and address.ipv4_mapped:
+                address = address.ipv4_mapped
+            if address.version == 6:
+                e.broker_ipv6 = address.packed
+            else:
+                e.broker_ipv4 = str(address)
+        return [e]
+
+    def reset_unhealthy_events(self, scope: str) -> bool:
+        """SET TCP_COMMS_STATUS; False if the client is not in this scope."""
+        if scope != self.scope:
+            return False
+        self.unhealthy_events[scope] = 0
+        return True
+
+    # --- Answering RPT requests (devices and controllers)
+    async def _send_rpt_status(self, k: P.RptHeader, code: int) -> None:
+        header = P.RptHeader(C.VECTOR_RPT_STATUS, self.uid, k.dest_endpoint, k.source, C.E133_NULL_ENDPOINT,
+                             k.sequence)
+        await self.send_rpt(header, P.build_status(code))
+
+    async def _send_rdm_response(self, k: P.RptHeader, raw_request: bytes, response: RdmMessage) -> None:
+        header = P.RptHeader(C.VECTOR_RPT_NOTIFICATION, self.uid, k.dest_endpoint, k.source, C.E133_NULL_ENDPOINT,
+                             k.sequence)
+        await self.send_rpt(header, P.build_notification([raw_request, response.encode()]))
 
     # --- Extension points
     async def _after_connect(self) -> None:

@@ -15,7 +15,7 @@ through a synchronous interface.
 
 | | |
 |---|---|
-| Software tests | 195/195 passing on Linux, macOS and Windows (Python 3.10–3.13, standard library only) |
+| Software tests | 206/206 passing on Linux, macOS and Windows (Python 3.10–3.13, standard library only) |
 | Real-world test | with an **LSS MasterPort 2** (firmware 2.13) as RDMnet gateway and an **ETC ColorSource PAR**: broker discovery via mDNS, connection, finding devices, reading, setting mode/start address and reading back (tested with 0.4) |
 | Other gateways/devices | not tested – feedback welcome |
 
@@ -34,7 +34,11 @@ No E1.33 conformance testing, no certification. Use at your own risk (see licens
 - **One broker per scope** (E1.33 9.1.4): before announcing itself the broker looks for other brokers on its scope;
   if there is one it stays in STANDBY (reported via `BROKER_STATUS`) until the other one is gone, and while running it
   warns when another broker appears. `brokers` lists all brokers of a scope.
-- **Controller**: RDM GET, ACK_TIMER, ACK_OVERFLOW, NACK, status messages
+- **Controller**: RDM GET, ACK_TIMER, ACK_OVERFLOW, NACK, status messages; `read_tcp_comms_status()` for the broker
+  address and unhealthy-connection count of a device or controller (`TCP_COMMS_STATUS`)
+- **Default responders of controllers and devices** (E1.33 7.2.1, 7.4.8): the controller answers RDM requests to its
+  own UID (required E1.20 PIDs, `COMPONENT_SCOPE`, `SEARCH_DOMAIN`, `TCP_COMMS_STATUS`); a SET of `COMPONENT_SCOPE`
+  moves a client to the new scope (and static broker). Unhealthy TCP connections are counted per scope.
 - **Automatic reconnection** (E1.33 6.2.5) for controllers, devices and EPT clients: after a broker restart or a
   lost connection they reconnect by themselves with the back-off of the standard; Client Redirect (IPv4) is followed.
   The facade waits for the reconnection instead of failing.
@@ -160,7 +164,7 @@ A mode change requires a confirmed mapping RDM personality ↔ mode (per model a
 | `rdm.py`, `rdm_params.py` | RDM messages, UID, checksum, parameter data |
 | `pdu.py`, `connection.py` | ACN TCP preamble, root/broker/RPT PDUs, TCP connection |
 | `broker.py`, `broker_responder.py` | broker, the broker's RDM responder |
-| `client.py`, `controller.py` | RPT client, controller |
+| `client.py`, `client_responder.py`, `controller.py` | RPT client, default responder of clients, controller |
 | `readout.py`, `settings_check.py` | reading devices, settings check, applying with read-back |
 | `storage.py` | SQLite tables `rdm_*`, migration of 0.4 databases |
 | `facade.py` | synchronous interface (asyncio in its own thread) |

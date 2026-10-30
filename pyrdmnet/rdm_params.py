@@ -280,6 +280,66 @@ def read_component_scope(data: bytes) -> ComponentScope:
     return ComponentScope(slot, scope, data[p], ipv4, bytes(data[p + 5:p + 21]), port)
 
 
+# ------------------------------------------------------------------- TCP_COMMS_STATUS (E1.33 7.6.3)
+TCP_COMMS_ENTRY_LENGTH = C.E133_SCOPE_LENGTH + 4 + 16 + 2 + 2  # 0x57
+
+
+@dataclass
+class TcpCommsEntry:
+    """One scope of an RPT client: broker address of the active TCP connection and unhealthy events."""
+
+    scope: str
+    broker_ipv4: str = "0.0.0.0"  # 0.0.0.0: no IPv4 connection
+    broker_ipv6: bytes = bytes(16)  # all zero: no IPv6 connection
+    broker_port: int = 0  # 0: no connection
+    unhealthy_events: int = 0
+
+    @property
+    def broker_address(self) -> str | None:
+        if self.broker_port == 0:
+            return None
+        if self.broker_ipv6 != bytes(16):
+            import ipaddress
+            return f"[{ipaddress.IPv6Address(self.broker_ipv6)}]:{self.broker_port}"
+        return f"{self.broker_ipv4}:{self.broker_port}"
+
+
+def build_scope_string(scope: str) -> bytes:
+    raw = scope.encode("utf-8")
+    if not 1 <= len(raw) <= C.E133_SCOPE_LENGTH - 1:
+        raise RdmFormatError(f"Scope must be 1 to {C.E133_SCOPE_LENGTH - 1} bytes long")
+    return raw.ljust(C.E133_SCOPE_LENGTH, b"\x00")
+
+
+def read_scope_string(data: bytes) -> str:
+    _check_length(data, C.E133_SCOPE_LENGTH, "scope string")
+    return data.split(b"\x00", 1)[0].decode("utf-8", errors="replace")
+
+
+def build_tcp_comms_entry(e: TcpCommsEntry) -> bytes:
+    ipv4 = bytes(int(t) for t in e.broker_ipv4.split("."))
+    if len(ipv4) != 4 or len(e.broker_ipv6) != 16:
+        raise RdmFormatError("TCP_COMMS_STATUS: invalid broker address")
+    return (build_scope_string(e.scope) + ipv4 + e.broker_ipv6
+            + struct.pack(">HH", e.broker_port, min(e.unhealthy_events, 0xFFFF)))
+
+
+def read_tcp_comms_entry(data: bytes) -> TcpCommsEntry:
+    _check_length(data, TCP_COMMS_ENTRY_LENGTH, "TCP_COMMS_STATUS")
+    p = C.E133_SCOPE_LENGTH
+    port, unhealthy = struct.unpack(">HH", data[p + 20:p + 24])
+    return TcpCommsEntry(read_scope_string(data[:p]), ".".join(str(b) for b in data[p:p + 4]),
+                         bytes(data[p + 4:p + 20]), port, unhealthy)
+
+
+def read_tcp_comms_entries(data: bytes) -> list[TcpCommsEntry]:
+    """Several entries (ACK_OVERFLOW parts are concatenated by the controller)."""
+    if len(data) % TCP_COMMS_ENTRY_LENGTH:
+        raise RdmFormatError(f"TCP_COMMS_STATUS: length {len(data)} is not a multiple of {TCP_COMMS_ENTRY_LENGTH}")
+    return [read_tcp_comms_entry(data[i:i + TCP_COMMS_ENTRY_LENGTH])
+            for i in range(0, len(data), TCP_COMMS_ENTRY_LENGTH)]
+
+
 def read_search_domain(data: bytes) -> str:
     if len(data) > C.E133_DOMAIN_LENGTH:
         raise RdmFormatError(f"SEARCH_DOMAIN longer than {C.E133_DOMAIN_LENGTH} bytes")
