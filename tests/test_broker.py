@@ -138,7 +138,7 @@ class TestRouting(NetworkTest):
     async def test_status_output(self):
         s = self.broker.status()
         self.assertEqual(len(s["clients"]), 2)
-        self.assertEqual({c["type"] for c in s["clients"]}, {"Gerät", "Controller"})
+        self.assertEqual({c["type"] for c in s["clients"]}, {"Device", "Controller"})
 
 
 class TestHeartbeat(unittest.IsolatedAsyncioTestCase):

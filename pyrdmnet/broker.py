@@ -170,7 +170,7 @@ class RdmnetBroker:
         if self._capture_lines >= self.config.capture_max_lines:
             return
         self._capture_lines += 1
-        e = {"time_utc": _now(), "peer": v.peer, "richtung": direction, "laenge": len(data),
+        e = {"time_utc": _now(), "peer": v.peer, "direction": direction, "length": len(data),
              "hex": data[:4096].hex()}
         try:
             with open(self.config.capture_file, "a", encoding="utf-8") as f:

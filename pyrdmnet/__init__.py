@@ -12,5 +12,5 @@ Principles:
   mDNS via Bonjour (dns-sd, available on macOS), otherwise optionally ``zeroconf``.
 """
 
-__version__ = "0.4.1"
+__version__ = "0.5.0"
 MODULE_NAME = "pyrdmnet"

@@ -55,17 +55,17 @@ class TestLiveTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(res["devices"]), 1)
         self.assertEqual(res["devices"][0]["check"]["status"], A.OK_UNCONFIRMED)
         self.assertEqual(len(res["devices"][0]["sensors"]["values"]), 4)
-        for file in ("bericht.md", "ergebnis.json", "livetest.sqlite", "broker_ereignisse.jsonl",
-                      "paketmitschnitt.jsonl"):
+        for file in ("report.md", "result.json", "live_test.sqlite", "broker_events.jsonl",
+                      "packet_capture.jsonl"):
             self.assertTrue((lt.folder / file).exists(), file)
-        lines = (lt.folder / "paketmitschnitt.jsonl").read_text().splitlines()
+        lines = (lt.folder / "packet_capture.jsonl").read_text().splitlines()
         self.assertGreater(len(lines), 10)
-        self.assertEqual(json.loads(lines[0])["richtung"], "ein")
+        self.assertEqual(json.loads(lines[0])["direction"], "in")
         self.assertTrue(any("CONNECTED" in z for z in self.output))
-        self.assertIn("SIM-PAR RGBL", (lt.folder / "bericht.md").read_text())
-        self.assertIn("read-only", (lt.folder / "bericht.md").read_text())
+        self.assertIn("SIM-PAR RGBL", (lt.folder / "report.md").read_text())
+        self.assertIn("read-only", (lt.folder / "report.md").read_text())
         ports = res["gateways"][0]["ports"]
-        self.assertEqual(ports[0]["mode"], "Ausgang")
+        self.assertEqual(ports[0]["mode"], "Output")
         self.assertEqual(ports[0]["name"], "DMX Port 1")
         self.assertEqual(ports[0]["universe"], 1)
         self.assertEqual(len(ports[0]["responder"]), 1)
@@ -144,7 +144,7 @@ class TestMasterPortCapture(unittest.TestCase):
         from pyrdmnet import rdm_params as R
         di = R.read_device_info(bytes.fromhex("010008510802020d001c00000101ffff000004"))
         self.assertEqual((di.model_id, di.footprint, di.start_address, di.sensor_count), (0x0851, 0, 0xFFFF, 4))
-        self.assertEqual(di.product_category_text, "Datenverteilung")
+        self.assertEqual(di.product_category_text, "Data distribution")
         changed, eps = R.read_endpoint_list(bytes.fromhex("00000000000101000201000301000401"))
         self.assertEqual([(e.number, e.type) for e in eps], [(1, 1), (2, 1), (3, 1), (4, 1)])
         self.assertEqual(R.read_endpoint_responders(bytes.fromhex("000100000004")), (1, 4, []))

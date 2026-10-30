@@ -59,19 +59,19 @@ class TestWriteTest(unittest.IsolatedAsyncioTestCase):
         s1, s2 = res["write_test"]["steps"]
         self.assertEqual(s1["actual"], {"mode": 4, "address": 100, "footprint": 3})
         self.assertEqual(s2["actual"], {"mode": 2, "address": 1, "footprint": 6})
-        db = sqlite3.connect(st.folder / "schreibtest.sqlite")
+        db = sqlite3.connect(st.folder / "write_test.sqlite")
         changed = db.execute("SELECT parameter, old, new, success FROM rdm_change ORDER BY id").fetchall()
         db.close()
         self.assertEqual(changed, [("DMX_PERSONALITY", "2", "4", 1), ("DMX_START_ADDRESS", "1", "100", 1),
                                 ("DMX_PERSONALITY", "4", "2", 1), ("DMX_START_ADDRESS", "100", "1", 1)])
-        report = (st.folder / "bericht.md").read_text()
+        report = (st.folder / "report.md").read_text()
         self.assertIn("## Write test", report)
         self.assertEqual(len(res["gateways"]), 1)
         self.assertEqual(report.count("## Write test"), 1)
         self.assertTrue(report.startswith("# Write test"))
         self.assertNotIn("read-only", report)
         self.assertIn("SIM Gateway", report)
-        self.assertTrue(json.loads((st.folder / "ergebnis.json").read_text())["success"])
+        self.assertTrue(json.loads((st.folder / "result.json").read_text())["success"])
 
     async def test_explicit_return_mode1(self):
         st, res, fx = await self._run_test(WriteConfig(4, 100, return_mode=1, return_address=1))

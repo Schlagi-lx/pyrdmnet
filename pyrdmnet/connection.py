@@ -19,7 +19,7 @@ class TcpConnection:
         self.last_received = time.monotonic()
         self.last_sent = time.monotonic()
         self.closed = False
-        self.capture = None  # optional: function(direction "ein" (in) / "aus" (out), raw data)
+        self.capture = None  # optional: function(direction "in" or "out", raw data)
         try:
             peer = writer.get_extra_info("peername")
             self.peer = f"{peer[0]}:{peer[1]}" if peer else "?"
@@ -31,7 +31,7 @@ class TcpConnection:
             raise ConnectionError("Connection closed")
         async with self._lock:
             if self.capture:
-                self.capture("aus", packet)
+                self.capture("out", packet)
             self.writer.write(packet)
             await self.writer.drain()
             self.last_sent = time.monotonic()
@@ -46,7 +46,7 @@ class TcpConnection:
         block = await P.read_tcp_block(self.reader)
         self.last_received = time.monotonic()
         if self.capture:
-            self.capture("ein", block)
+            self.capture("in", block)
         return P.read_root_pdus(block)
 
     async def close(self) -> None:

@@ -102,8 +102,8 @@ class LiveTest:
         if not ip_is_local(self.k.host):
             return self._abort(f"IP {self.k.host} does not belong to any network adapter of this computer")
         broker = RdmnetBroker(BrokerConfig(host=self.k.host, port=self.k.port, scope=self.k.scope,
-                                           event_file=self.folder / "broker_ereignisse.jsonl",
-                                           capture_file=self.folder / "paketmitschnitt.jsonl"))
+                                           event_file=self.folder / "broker_events.jsonl",
+                                           capture_file=self.folder / "packet_capture.jsonl"))
         try:
             await broker.start()
         except OSError as f:
@@ -172,10 +172,10 @@ class LiveTest:
                 elif kind in ("protocol_error", "internal_error"):
                     self.p(f"  PROTOCOL ERROR ({e['peer']}): {e['error']}")
             seen = len(events)
-            devices = [c["uid"] for c in broker.status()["clients"] if c["type"] == "Gerät"]
+            devices = [c["uid"] for c in broker.status()["clients"] if c["type"] == "Device"]
             if devices:
                 await asyncio.sleep(3)  # give further gateways a moment to connect
-                return [c["uid"] for c in broker.status()["clients"] if c["type"] == "Gerät"]
+                return [c["uid"] for c in broker.status()["clients"] if c["type"] == "Device"]
             await asyncio.sleep(0.5)
         return devices
 
@@ -188,7 +188,7 @@ class LiveTest:
             self._error(f"Own controller cannot connect: {f}")
             return
         reader = DeviceReader(c, self.k.rdm_timeout_s)
-        store = RdmStore(self.folder / "livetest.sqlite")
+        store = RdmStore(self.folder / "live_test.sqlite")
         try:
             # the gateways themselves (default responder)
             for e in c.devices():
@@ -302,8 +302,8 @@ class LiveTest:
                       "the broker is visible. If necessary use --no-mdns and enter the address statically."):
                 self._hint(t)
         elif "connect_rejected" in kinds:
-            self._hint("Connection was rejected - see reason above (usually the scope). Make the scope in the "
-                          "MasterPort and --scope match.")
+            self._hint("Connection was rejected - see reason above (usually the scope). Scope in the MasterPort "
+                          "and --scope must match.")
         else:
             self._hint("TCP connection without a valid connect - please send the packet capture.")
 
@@ -322,12 +322,12 @@ class LiveTest:
         self._write_files(broker)
         self.p(f"\nResult: {'SUCCESSFUL' if self.result['success'] else 'NOT SUCCESSFUL'}")
         self.p(f"Result folder: {self.folder.resolve()}")
-        self.p("Please send back the whole folder (or bericht.md + paketmitschnitt.jsonl).")
+        self.p("Please send back the whole folder (or report.md + packet_capture.jsonl).")
         return self.result
 
     def _write_files(self, broker: RdmnetBroker | None) -> None:
         self.folder.mkdir(parents=True, exist_ok=True)
-        (self.folder / "ergebnis.json").write_text(json.dumps(self.result, ensure_ascii=False, indent=2),
+        (self.folder / "result.json").write_text(json.dumps(self.result, ensure_ascii=False, indent=2),
                                                    encoding="utf-8")
         z = [f"# {self.report_title} pyrdmnet {__version__}", "",
              f"- Start: {self.result['start_utc']} (UTC)",
@@ -360,7 +360,7 @@ class LiveTest:
                  + [f"- {x}" for x in self.result["hints"]]
         if broker:
             z += ["", "## Broker counters", "", "```", json.dumps(broker.status()["counters"], indent=2), "```"]
-        (self.folder / "bericht.md").write_text("\n".join(z) + "\n", encoding="utf-8")
+        (self.folder / "report.md").write_text("\n".join(z) + "\n", encoding="utf-8")
 
 
 def choose_adapter(input_fn=input, output=print) -> str | None:

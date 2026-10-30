@@ -69,7 +69,7 @@ class WriteTest(LiveTest):
             self._error(f"Own controller cannot connect: {f}")
             return
         reader = DeviceReader(c, self.k.rdm_timeout_s)
-        store = RdmStore(self.folder / "schreibtest.sqlite")
+        store = RdmStore(self.folder / "write_test.sqlite")
         try:
             for e in c.devices():
                 gp = await reader.profile(DeviceAddress(e.uid, 0, e.uid))
@@ -244,5 +244,5 @@ class WriteTest(LiveTest):
             z.append(f"- {s['step']}: expected {s['target']}, actual {s['actual']}, {'OK' if s['ok'] else 'NOT OK'}"
                      + (f", errors: {'; '.join(s['error'])}" if s["error"] else ""))
         z.append(f"- Result: {'successful' if st.get('success') else 'not successful'}")
-        with open(self.folder / "bericht.md", "a", encoding="utf-8") as f:
+        with open(self.folder / "report.md", "a", encoding="utf-8") as f:
             f.write("\n".join(z) + "\n")

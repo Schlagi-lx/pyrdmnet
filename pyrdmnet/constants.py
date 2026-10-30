@@ -7,8 +7,8 @@ All values were checked on 2026-10-26 against ETC's reference implementations
   src/rdmnet/core/broker_prot.*, src/rdmnet/core/rpt_prot.*)
 * ETCLabs/RDM     commit db1bfefab9aac96a2c790bb8d5fe079ff1a59650 (include/rdm/defs.h)
 
-The standard text itself was not available. Before a real-world test with third-party devices,
-a check against E1.33-2019 is advisable (see ARCHITEKTUR.md, open issues).
+The LLRP constants, the broker PDU vectors and the COMPONENT_SCOPE layout were later checked
+against the text of ANSI E1.33-2019 (section 5, section 7.6, tables A-2 to A-7 and A-23).
 """
 
 # ---------------------------------------------------------------- ACN framing

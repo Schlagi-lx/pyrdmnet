@@ -12,7 +12,7 @@ from . import pdu as P
 from .rdm import Uid
 from .connection import TcpConnection
 
-log = logging.getLogger("pyrdmnet.klient")
+log = logging.getLogger("pyrdmnet.client")
 
 
 class RdmnetConnectionError(ConnectionError):
