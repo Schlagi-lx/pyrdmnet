@@ -4,7 +4,7 @@
 
 - [x] 1. Broker als RDM-Responder: Anfragen an die eigene Broker-UID beantworten
       (`COMPONENT_SCOPE`, `SEARCH_DOMAIN`, `BROKER_STATUS`, Basis-PIDs nach E1.20)
-- [ ] 2. `CLIENT_ENTRY_UPDATE` verarbeiten (bisher nur gezählt und ignoriert)
+- [x] 2. `CLIENT_ENTRY_UPDATE` verarbeiten (bisher nur gezählt und ignoriert)
 - [ ] 3. LLRP: Gateways ohne Broker finden, Scope/Broker-Adresse setzen
 - [ ] 4. PDU-Vererbung (Flags) in `pdu.py` unterstützen
 - [ ] 5. EPT-Clients sauber durchreichen oder ablehnen

@@ -98,6 +98,9 @@ class RdmnetController(RptKlient):
         elif bp.vektor in (K.VECTOR_BROKER_CLIENT_ADD, K.VECTOR_BROKER_CLIENT_ENTRY_CHANGE):
             for e in P.lese_client_eintraege(bp.daten):
                 if e.protokoll == K.E133_CLIENT_PROTOKOLL_RPT:
+                    # Entry Change kann die UID ändern: alten Eintrag derselben CID ersetzen
+                    for alt in [u for u, a in self.clients.items() if a.cid == e.cid]:
+                        del self.clients[alt]
                     self.clients[e.uid] = e
         elif bp.vektor == K.VECTOR_BROKER_CLIENT_REMOVE:
             for e in P.lese_client_eintraege(bp.daten):

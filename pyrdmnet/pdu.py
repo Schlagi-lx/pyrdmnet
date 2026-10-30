@@ -155,6 +155,20 @@ def lese_client_eintraege(daten: bytes) -> list[ClientEintrag]:
     return eintraege
 
 
+def baue_client_entry_update(flags: int, eintrag: ClientEintrag) -> bytes:
+    """Daten einer Client-Entry-Update-Nachricht (E1.33 6.3.1.4): Flags + Client-Eintrag."""
+    return bytes((flags,)) + eintrag.kodieren()
+
+
+def lese_client_entry_update(daten: bytes) -> tuple[int, ClientEintrag]:
+    if len(daten) < 1:
+        raise ProtokollFehler("Client Entry Update ohne Daten")
+    eintraege = lese_client_eintraege(daten[1:])
+    if len(eintraege) != 1:
+        raise ProtokollFehler("Client Entry Update muss genau einen Client-Eintrag enthalten")
+    return daten[0], eintraege[0]
+
+
 @dataclass
 class ConnectDaten:
     scope: str

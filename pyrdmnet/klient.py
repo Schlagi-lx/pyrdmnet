@@ -32,6 +32,7 @@ class RptKlient:
         self.scope = scope
         self.cid = cid or uuid.uuid4()
         self.inkrementell = inkrementell
+        self.binding_cid = uuid.UUID(int=0)  # nur Geräte: CID einer Komponente auf derselben Hardware
         self.heartbeat_intervall_s = heartbeat_intervall_s
         self.heartbeat_timeout_s = heartbeat_timeout_s
         self.uid: Uid | None = None
@@ -40,6 +41,7 @@ class RptKlient:
         self._tasks: list[asyncio.Task] = []
         self.getrennt = asyncio.Event()
         self.trenngrund: str = ""
+        self._update_antwort: asyncio.Future | None = None
 
     @property
     def verbunden(self) -> bool:
@@ -51,7 +53,7 @@ class RptKlient:
         except (OSError, asyncio.TimeoutError) as fehler:
             raise VerbindungsFehler(f"Broker {host}:{port} nicht erreichbar: {fehler}") from fehler
         v = Verbindung(reader, writer, self.cid)
-        eintrag = P.ClientEintrag(self.cid, self.uid_wunsch, self.typ)
+        eintrag = P.ClientEintrag(self.cid, self.uid_wunsch, self.typ, self.binding_cid)
         flags = K.BROKER_CONNECT_FLAG_INKREMENTELL if self.inkrementell else 0
         cd = P.ConnectDaten(self.scope, K.E133_VERSION, K.E133_STANDARD_DOMAIN, flags, eintrag)
         try:
@@ -76,6 +78,39 @@ class RptKlient:
         await self._nach_verbindung()
         return rep.client_uid
 
+    async def eintrag_aktualisieren(self, uid: Uid | None = None, typ: int | None = None,
+                                    binding_cid: uuid.UUID | None = None, inkrementell: bool | None = None,
+                                    timeout_s: float = 5.0) -> Uid:
+        """Eigenen Client-Eintrag ohne Neuverbindung ändern (E1.33 Client Entry Update).
+
+        Nicht angegebene Werte bleiben gleich. Bei dynamischer UID wird erneut eine
+        dynamische UID angefragt; der Broker vergibt dieselbe (Zuordnung je CID).
+        Lehnt der Broker ab, trennt er die Verbindung (VerbindungsFehler mit Code).
+        """
+        if not self.verbunden:
+            raise VerbindungsFehler("Nicht mit Broker verbunden")
+        if self._update_antwort is not None and not self._update_antwort.done():
+            raise VerbindungsFehler("Es läuft bereits eine Eintragsänderung")
+        if uid is None:
+            uid = self.uid_wunsch if self.uid_wunsch.ist_dynamisch_angefragt else self.uid
+        typ = self.typ if typ is None else typ
+        binding = self.binding_cid if binding_cid is None else binding_cid
+        inkr = self.inkrementell if inkrementell is None else inkrementell
+        flags = K.BROKER_CONNECT_FLAG_INKREMENTELL if inkr else 0
+        self._update_antwort = asyncio.get_running_loop().create_future()
+        await self.sende_broker(K.VECTOR_BROKER_CLIENT_ENTRY_UPDATE,
+                                P.baue_client_entry_update(flags, P.ClientEintrag(self.cid, uid, typ, binding)))
+        try:
+            rep = await asyncio.wait_for(asyncio.shield(self._update_antwort), timeout_s)
+        except asyncio.TimeoutError as fehler:
+            raise VerbindungsFehler("Keine Antwort des Brokers auf Client Entry Update") from fehler
+        if rep.code != K.E133_CONNECT_OK:
+            raise VerbindungsFehler(f"Broker lehnt Eintragsänderung ab: "
+                                    f"{K.CONNECT_CODE_TEXT.get(rep.code, rep.code)}", rep.code)
+        self.uid_wunsch = uid
+        self.uid, self.typ, self.binding_cid, self.inkrementell = rep.client_uid, typ, binding, inkr
+        return rep.client_uid
+
     async def trennen(self) -> None:
         if self._v and not self._v.geschlossen:
             try:
@@ -93,6 +128,9 @@ class RptKlient:
     async def _beenden(self, grund: str) -> None:
         if self._v:
             await self._v.schliessen()
+        f = self._update_antwort
+        if f is not None and not f.done():
+            f.set_exception(VerbindungsFehler(f"Verbindung getrennt: {grund}"))
         if not self.getrennt.is_set():
             self.trenngrund = grund
             self.getrennt.set()
@@ -119,6 +157,11 @@ class RptKlient:
                             if bp.vektor == K.VECTOR_BROKER_DISCONNECT:
                                 grund = "Broker sendet Disconnect"
                                 return
+                            if bp.vektor == K.VECTOR_BROKER_CONNECT_REPLY:
+                                f = self._update_antwort
+                                if f is not None and not f.done():
+                                    f.set_result(P.lese_connect_reply(bp.daten))
+                                continue
                             await self._bei_broker(bp)
                         elif root.vektor == K.VECTOR_ROOT_E133_RPT:
                             await self._bei_rpt(P.lese_rpt(root.daten))
