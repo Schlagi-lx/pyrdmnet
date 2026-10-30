@@ -1,4 +1,4 @@
-"""Broker: Connect-Prüfungen, Clientlisten, Routing, Heartbeat, Robustheit."""
+"""Broker: connect checks, client lists, routing, heartbeat, robustness."""
 
 import asyncio
 import os
@@ -65,7 +65,7 @@ class TestConnect(unittest.IsolatedAsyncioTestCase):
         await k3.disconnect()
 
     async def test_capacity(self):
-        ks = [await self._rpt_client(Uid(0x7FF0, i)) for i in range(10, 13)]  # 0x7ff0:00000001 ist die Broker-UID
+        ks = [await self._rpt_client(Uid(0x7FF0, i)) for i in range(10, 13)]  # 0x7ff0:00000001 is the broker UID
         with self.assertRaises(RdmnetConnectionError) as ctx:
             await self._rpt_client(Uid(0x7FF0, 9))
         self.assertEqual(ctx.exception.code, C.E133_CONNECT_CAPACITY_EXCEEDED)
@@ -77,9 +77,9 @@ class TestConnect(unittest.IsolatedAsyncioTestCase):
             r, w = await asyncio.open_connection("127.0.0.1", self.b.port)
             w.write(data)
             await w.drain()
-            self.assertEqual(await asyncio.wait_for(r.read(), 3), b"")  # Broker schließt
+            self.assertEqual(await asyncio.wait_for(r.read(), 3), b"")  # broker closes
             w.close()
-        k = await self._rpt_client(Uid(0x7FF0, 5))  # Broker läuft weiter
+        k = await self._rpt_client(Uid(0x7FF0, 5))  # broker keeps running
         await k.disconnect()
         self.assertGreaterEqual(self.b.counters["protocol_error"], 1)
 
@@ -145,7 +145,7 @@ class TestHeartbeat(unittest.IsolatedAsyncioTestCase):
     async def test_broker_drops_silent_client(self):
         b = RdmnetBroker(BrokerConfig(port=0, heartbeat_interval_s=0.2, heartbeat_timeout_s=0.6))
         await b.start()
-        # Client ohne eigenen Heartbeat (sehr langes Intervall)
+        # client without its own heartbeat (very long interval)
         k = RptClient(C.RPT_CLIENT_TYPE_DEVICE, Uid(0x7FF0, 3), heartbeat_interval_s=100, heartbeat_timeout_s=100)
         await k.connect("127.0.0.1", b.port)
         await asyncio.wait_for(k.disconnected.wait(), 5)

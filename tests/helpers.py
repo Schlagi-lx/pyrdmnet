@@ -1,4 +1,4 @@
-"""Gemeinsame Testumgebung: Broker + simuliertes Gerät + Controller auf 127.0.0.1."""
+"""Shared test environment: broker + simulated device + controller on 127.0.0.1."""
 
 import unittest
 

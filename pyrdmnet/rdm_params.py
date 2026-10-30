@@ -1,7 +1,7 @@
-"""Parameterdaten ausgewählter RDM-PIDs lesen (Controller) und erzeugen (Simulator).
+"""Read (controller) and build (simulator) parameter data of selected RDM PIDs.
 
-Jede ``lese_*``-Funktion prüft die Länge und wirft :class:`RdmFormatFehler`
-bei abweichendem Format. Es wird nichts geraten oder aufgefüllt.
+Every ``read_*`` function checks the length and raises :class:`RdmFormatError`
+if the format deviates. Nothing is guessed or padded.
 """
 
 from __future__ import annotations
@@ -14,13 +14,13 @@ from .rdm import RdmFormatError, Uid
 
 
 def _text(data: bytes) -> str:
-    """RDM-Texte sind ASCII bis 32 Zeichen, evtl. nullterminiert."""
+    """RDM texts are ASCII up to 32 characters, possibly null-terminated."""
     return data.split(b"\x00", 1)[0].decode("ascii", errors="replace").strip()
 
 
 def _check_length(data: bytes, expected: int, pid: str) -> None:
     if len(data) != expected:
-        raise RdmFormatError(f"{pid}: {len(data)} Byte statt {expected}")
+        raise RdmFormatError(f"{pid}: {len(data)} bytes instead of {expected}")
 
 
 # ------------------------------------------------------------------- DEVICE_INFO
@@ -33,7 +33,7 @@ class DeviceInfo:
     footprint: int
     personality_current: int
     personality_count: int
-    start_address: int  # 0xFFFF = kein Footprint
+    start_address: int  # 0xFFFF = no footprint
     subdevice_count: int
     sensor_count: int
 
@@ -47,7 +47,7 @@ class DeviceInfo:
         return d
 
 
-_DI = struct.Struct(">HHHIHBBHHB")  # 19 Byte
+_DI = struct.Struct(">HHHIHBBHHB")  # 19 bytes
 
 
 def read_device_info(data: bytes) -> DeviceInfo:
@@ -61,10 +61,10 @@ def build_device_info(di: DeviceInfo) -> bytes:
                     di.subdevice_count, di.sensor_count)
 
 
-# ------------------------------------------------------------------- Texte
+# ------------------------------------------------------------------- Texts
 def read_text_field(data: bytes) -> str:
     if len(data) > 32:
-        raise RdmFormatError(f"Text länger als 32 Byte ({len(data)})")
+        raise RdmFormatError(f"Text longer than 32 bytes ({len(data)})")
     return _text(data)
 
 
@@ -87,7 +87,7 @@ def read_personality(data: bytes) -> tuple[int, int]:
 
 def read_personality_description(data: bytes) -> Personality:
     if not 3 <= len(data) <= 35:
-        raise RdmFormatError(f"DMX_PERSONALITY_DESCRIPTION: {len(data)} Byte")
+        raise RdmFormatError(f"DMX_PERSONALITY_DESCRIPTION: {len(data)} bytes")
     num, fp = struct.unpack(">BH", data[:3])
     return Personality(num, fp, _text(data[3:]))
 
@@ -108,11 +108,11 @@ def read_u32(data: bytes, pid: str) -> int:
 
 def read_pid_list(data: bytes) -> list[int]:
     if len(data) % 2:
-        raise RdmFormatError("SUPPORTED_PARAMETERS: ungerade Länge")
+        raise RdmFormatError("SUPPORTED_PARAMETERS: odd length")
     return [v for (v,) in struct.iter_unpack(">H", data)]
 
 
-# ------------------------------------------------------------------- Sensoren
+# ------------------------------------------------------------------- Sensors
 @dataclass
 class SensorDefinition:
     number: int
@@ -136,11 +136,11 @@ class SensorDefinition:
 
     @property
     def type_text(self) -> str:
-        return C.SENSOR_TYPE_TEXT.get(self.type, f"herstellerspezifisch ({self.type:#04x})")
+        return C.SENSOR_TYPE_TEXT.get(self.type, f"manufacturer-specific ({self.type:#04x})")
 
     @property
     def unit_text(self) -> str:
-        return C.UNIT_TEXT.get(self.unit, f"Einheit {self.unit:#04x}")
+        return C.UNIT_TEXT.get(self.unit, f"unit {self.unit:#04x}")
 
     @property
     def measurement_relevant(self) -> bool:
@@ -164,12 +164,12 @@ class SensorDefinition:
         return d
 
 
-_SD = struct.Struct(">BBBBhhhhB")  # 13 Byte + Beschreibung
+_SD = struct.Struct(">BBBBhhhhB")  # 13 bytes + description
 
 
 def read_sensor_definition(data: bytes) -> SensorDefinition:
     if not _SD.size <= len(data) <= _SD.size + 32:
-        raise RdmFormatError(f"SENSOR_DEFINITION: {len(data)} Byte")
+        raise RdmFormatError(f"SENSOR_DEFINITION: {len(data)} bytes")
     values = _SD.unpack(data[:_SD.size])
     return SensorDefinition(*values, description=_text(data[_SD.size:]))
 
@@ -188,7 +188,7 @@ class SensorRawValue:
     recorded: int
 
 
-_SV = struct.Struct(">Bhhhh")  # 9 Byte
+_SV = struct.Struct(">Bhhhh")  # 9 bytes
 
 
 def read_sensor_value(data: bytes) -> SensorRawValue:
@@ -209,7 +209,7 @@ class Endpoint:
 
 def read_endpoint_list(data: bytes) -> tuple[int, list[Endpoint]]:
     if len(data) < 4 or (len(data) - 4) % 3:
-        raise RdmFormatError(f"ENDPOINT_LIST: {len(data)} Byte")
+        raise RdmFormatError(f"ENDPOINT_LIST: {len(data)} bytes")
     (change,) = struct.unpack(">I", data[:4])
     eps = [Endpoint(n, t) for n, t in struct.iter_unpack(">HB", data[4:])]
     return change, eps
@@ -221,7 +221,7 @@ def build_endpoint_list(change: int, eps: list[Endpoint]) -> bytes:
 
 def read_endpoint_responders(data: bytes) -> tuple[int, int, list[Uid]]:
     if len(data) < 6 or (len(data) - 6) % 6:
-        raise RdmFormatError(f"ENDPOINT_RESPONDERS: {len(data)} Byte")
+        raise RdmFormatError(f"ENDPOINT_RESPONDERS: {len(data)} bytes")
     ep, change = struct.unpack(">HI", data[:6])
     uids = [Uid.from_bytes(data[i:i + 6]) for i in range(6, len(data), 6)]
     return ep, change, uids
@@ -237,8 +237,8 @@ def read_endpoint_universe(data: bytes) -> tuple[int, int]:
 
 
 # ------------------------------------------------------------------- E1.33 COMPONENT_SCOPE / SEARCH_DOMAIN
-# Hinweis: E1.33-2019 nennt als PDL 0x54, die Felder ergeben aber 88 Byte (0x58);
-# die ETC-Referenzimplementierung sendet ebenfalls 88 Byte. Gesendet wird 88.
+# Note: E1.33-2019 states a PDL of 0x54, but the fields add up to 88 bytes (0x58);
+# the ETC reference implementation also sends 88 bytes. We send 88.
 COMPONENT_SCOPE_LENGTH = 2 + C.E133_SCOPE_LENGTH + 1 + 4 + 16 + 2
 
 
@@ -265,7 +265,7 @@ def build_component_scope(cs: ComponentScope) -> bytes:
     raw = cs.scope.encode("utf-8")[:C.E133_SCOPE_LENGTH - 1]
     ipv4 = bytes(int(t) for t in cs.static_ipv4.split("."))
     if len(ipv4) != 4 or len(cs.static_ipv6) != 16:
-        raise RdmFormatError("COMPONENT_SCOPE: statische Adresse ungültig")
+        raise RdmFormatError("COMPONENT_SCOPE: invalid static address")
     return (struct.pack(">H", cs.slot) + raw.ljust(C.E133_SCOPE_LENGTH, b"\x00") + bytes((cs.static_type,))
             + ipv4 + cs.static_ipv6 + struct.pack(">H", cs.static_port))
 
@@ -282,5 +282,5 @@ def read_component_scope(data: bytes) -> ComponentScope:
 
 def read_search_domain(data: bytes) -> str:
     if len(data) > C.E133_DOMAIN_LENGTH:
-        raise RdmFormatError(f"SEARCH_DOMAIN länger als {C.E133_DOMAIN_LENGTH} Byte")
+        raise RdmFormatError(f"SEARCH_DOMAIN longer than {C.E133_DOMAIN_LENGTH} bytes")
     return data.split(b"\x00", 1)[0].decode("utf-8", errors="replace")

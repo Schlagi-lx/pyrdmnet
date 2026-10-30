@@ -1,4 +1,4 @@
-"""RDM-Nachrichten nach ANSI E1.20: UID, Kodierung, Dekodierung, Prüfsumme."""
+"""RDM messages per ANSI E1.20: UID, encoding, decoding, checksum."""
 
 from __future__ import annotations
 
@@ -9,20 +9,20 @@ from . import constants as C
 
 
 class RdmFormatError(ValueError):
-    """Eine RDM-Nachricht ist formal ungültig (Länge, Startcode, Prüfsumme)."""
+    """An RDM message is malformed (length, start code, checksum)."""
 
 
 # ------------------------------------------------------------------- UID
 @dataclass(frozen=True, order=True)
 class Uid:
-    """RDM-UID: 16 Bit Herstellerkennung + 32 Bit Gerätekennung."""
+    """RDM UID: 16-bit manufacturer ID + 32-bit device ID."""
 
     manufacturer: int
     device: int
 
     def __post_init__(self) -> None:
         if not 0 <= self.manufacturer <= 0xFFFF or not 0 <= self.device <= 0xFFFFFFFF:
-            raise ValueError(f"UID außerhalb des Wertebereichs: {self.manufacturer:#x}:{self.device:#x}")
+            raise ValueError(f"UID out of range: {self.manufacturer:#x}:{self.device:#x}")
 
     @classmethod
     def from_int(cls, value: int) -> "Uid":
@@ -31,16 +31,16 @@ class Uid:
     @classmethod
     def from_bytes(cls, data: bytes) -> "Uid":
         if len(data) != 6:
-            raise RdmFormatError("UID braucht genau 6 Byte")
+            raise RdmFormatError("UID requires exactly 6 bytes")
         h, g = struct.unpack(">HI", data)
         return cls(h, g)
 
     @classmethod
     def from_text(cls, text: str) -> "Uid":
-        """Akzeptiert ``7ff0:00000001`` oder ``7ff000000001``."""
+        """Accepts ``7ff0:00000001`` or ``7ff000000001``."""
         t = text.strip().replace(":", "")
         if len(t) != 12:
-            raise ValueError(f"UID-Text ungültig: {text!r}")
+            raise ValueError(f"Invalid UID text: {text!r}")
         return cls.from_int(int(t, 16))
 
     def to_int(self) -> int:
@@ -49,14 +49,14 @@ class Uid:
     def to_bytes(self) -> bytes:
         return struct.pack(">HI", self.manufacturer, self.device)
 
-    # --- Eigenschaften nach E1.20 / E1.33
+    # --- properties per E1.20 / E1.33
     @property
     def is_broadcast(self) -> bool:
         return self.device == 0xFFFFFFFF
 
     @property
     def is_dynamic_request(self) -> bool:
-        """E1.33: Dynamische UID wird angefragt mit gesetztem MSB und Geräte-ID 0."""
+        """E1.33: a dynamic UID is requested with the MSB set and device ID 0."""
         return bool(self.manufacturer & 0x8000) and self.device == 0
 
     @property
@@ -77,7 +77,7 @@ NULL_UID = Uid(0, 0)
 
 
 def is_device_broadcast(uid: Uid) -> bool:
-    """RPT_ALL_DEVICES (0xFFFD FFFFFFFF) oder RPT_ALL_MID_DEVICES (0xFFFD mmmm FFFF)."""
+    """RPT_ALL_DEVICES (0xFFFD FFFFFFFF) or RPT_ALL_MID_DEVICES (0xFFFD mmmm FFFF)."""
     w = uid.to_int()
     if w == C.E133_RPT_ALL_DEVICES:
         return True
@@ -91,14 +91,14 @@ def manufacturer_from_mid_broadcast(uid: Uid) -> int | None:
     return None
 
 
-# ------------------------------------------------------------------- Nachricht
+# ------------------------------------------------------------------- Message
 def checksum(data: bytes) -> int:
     return sum(data) & 0xFFFF
 
 
 @dataclass
 class RdmMessage:
-    """Eine RDM-Nachricht (Anfrage oder Antwort)."""
+    """An RDM message (request or response)."""
 
     dest: Uid
     source: Uid
@@ -110,7 +110,7 @@ class RdmMessage:
     message_count: int = 0
     subdevice: int = C.RDM_ROOT_DEVICE
 
-    # --- abgeleitete Eigenschaften
+    # --- derived properties
     @property
     def is_response(self) -> bool:
         return self.command_class in (C.CC_GET_RESPONSE, C.CC_SET_RESPONSE, C.CC_DISCOVERY_RESPONSE)
@@ -121,7 +121,7 @@ class RdmMessage:
 
     def encode(self) -> bytes:
         if len(self.data) > C.RDM_MAX_PDL:
-            raise RdmFormatError(f"Parameterdaten zu lang ({len(self.data)} > {C.RDM_MAX_PDL})")
+            raise RdmFormatError(f"Parameter data too long ({len(self.data)} > {C.RDM_MAX_PDL})")
         length = C.RDM_HEADER_LENGTH + len(self.data)
         header = struct.pack(
             ">BBB6s6sBBBHBHB",
@@ -142,21 +142,21 @@ class RdmMessage:
         return raw + struct.pack(">H", checksum(raw))
 
     @classmethod
-    def decode(cls, raw: bytes) -> "RdmNachricht":
+    def decode(cls, raw: bytes) -> "RdmMessage":
         if len(raw) < C.RDM_HEADER_LENGTH + 2:
-            raise RdmFormatError(f"RDM-Nachricht zu kurz ({len(raw)} Byte)")
+            raise RdmFormatError(f"RDM message too short ({len(raw)} bytes)")
         if raw[0] != C.RDM_STARTCODE or raw[1] != C.RDM_SUB_STARTCODE:
-            raise RdmFormatError("Falscher RDM-Start- oder Sub-Startcode")
+            raise RdmFormatError("Wrong RDM start code or sub-start code")
         length = raw[2]
         if length < C.RDM_HEADER_LENGTH or len(raw) < length + 2:
-            raise RdmFormatError(f"Längenfeld {length} passt nicht zu {len(raw)} Byte")
+            raise RdmFormatError(f"Length field {length} does not match {len(raw)} bytes")
         pdl = raw[23]
         if length != C.RDM_HEADER_LENGTH + pdl:
-            raise RdmFormatError(f"PDL {pdl} passt nicht zum Längenfeld {length}")
+            raise RdmFormatError(f"PDL {pdl} does not match length field {length}")
         (expected,) = struct.unpack(">H", raw[length:length + 2])
         actual = checksum(raw[:length])
         if expected != actual:
-            raise RdmFormatError(f"Prüfsumme falsch (gelesen {expected:#06x}, berechnet {actual:#06x})")
+            raise RdmFormatError(f"Checksum mismatch (read {expected:#06x}, calculated {actual:#06x})")
         (_, _, _, dest, source, tn, port, mc, sub, cc, pid, _pdl) = struct.unpack(
             ">BBB6s6sBBBHBHB", raw[:C.RDM_HEADER_LENGTH]
         )
@@ -172,8 +172,8 @@ class RdmMessage:
             data=bytes(raw[C.RDM_HEADER_LENGTH:length]),
         )
 
-    def response(self, response_type: int, data: bytes = b"", message_count: int = 0) -> "RdmNachricht":
-        """Erzeugt die passende Antwort auf diese Anfrage (für Responder/Simulator)."""
+    def response(self, response_type: int, data: bytes = b"", message_count: int = 0) -> "RdmMessage":
+        """Creates the matching response to this request (for responder/simulator)."""
         cc_response = {C.CC_GET: C.CC_GET_RESPONSE, C.CC_SET: C.CC_SET_RESPONSE,
                       C.CC_DISCOVERY: C.CC_DISCOVERY_RESPONSE}.get(self.command_class, self.command_class)
         return RdmMessage(
@@ -191,7 +191,7 @@ class RdmMessage:
 
 @dataclass
 class TransactionCounter:
-    """Transaktionsnummer je RDM-Ziel (E1.20: 8 Bit, fortlaufend)."""
+    """Transaction number per RDM destination (E1.20: 8 bits, sequential)."""
 
     _state: dict = field(default_factory=dict)
 

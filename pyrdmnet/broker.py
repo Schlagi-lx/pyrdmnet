@@ -1,21 +1,21 @@
-"""Eigener RDMnet-Broker nach ANSI E1.33 (RPT-Clients, TCP, asyncio).
+"""Standalone RDMnet broker according to ANSI E1.33 (RPT clients, TCP, asyncio).
 
-Umfang V0.1:
-* Client Connect mit Prüfung von Scope, E1.33-Version, Client-Eintrag, UID
-* Statische und dynamische UIDs (Zuordnung je CID bleibt über Neuverbindungen gleich)
-* Connected Client List, Client Add/Remove/Entry Change an Clients mit Inkrementell-Flag
-* Client Entry Update (Eintrag ändern ohne Neuverbindung)
+Scope of V0.1:
+* Client Connect with checks of scope, E1.33 version, client entry, UID
+* Static and dynamic UIDs (assignment per CID stays the same across reconnects)
+* Connected Client List, Client Add/Remove/Entry Change to clients with the incremental flag
+* Client Entry Update (change the entry without reconnecting)
 * Request Dynamic UIDs / Fetch Dynamic UID List
-* RPT-Weiterleitung Controller → Gerät (auch Broadcast an alle Geräte bzw.
-  alle Geräte eines Herstellers), Gerät → Controller (gezielt oder an alle)
-* Status UNKNOWN_RPT_UID und BROADCAST_COMPLETE vom Broker
-* Broker-eigener RDM-Responder (siehe :mod:`pyrdmnet.broker_responder`)
-* Heartbeat (Broker-NULL) und Verbindungsabbau bei Zeitüberschreitung
-* Ereignisprotokoll im Speicher und optional als JSONL-Datei
+* RPT forwarding controller → device (also broadcast to all devices or
+  all devices of one manufacturer), device → controller (targeted or to all)
+* Status UNKNOWN_RPT_UID and BROADCAST_COMPLETE from the broker
+* Broker's own RDM responder (see :mod:`pyrdmnet.broker_responder`)
+* Heartbeat (broker NULL) and disconnect on timeout
+* Event log in memory and optionally as a JSONL file
 
-* LLRP-Target (optional, ``BrokerKonfig.llrp``)
+* LLRP target (optional, ``BrokerConfig.llrp``)
 
-Nicht enthalten: EPT-Clients, Redirect. DNS-SD-Anmeldung über :mod:`pyrdmnet.dnssd`.
+Not included: EPT clients, redirect. DNS-SD registration via :mod:`pyrdmnet.dnssd`.
 """
 
 from __future__ import annotations
@@ -43,10 +43,10 @@ log = logging.getLogger("pyrdmnet.broker")
 @dataclass
 class BrokerConfig:
     host: str = "127.0.0.1"
-    port: int = 8888  # 0 = freien Port wählen
+    port: int = 8888  # 0 = pick a free port
     scope: str = C.E133_DEFAULT_SCOPE
-    search_domain: str = C.E133_DEFAULT_DOMAIN  # für RDM SEARCH_DOMAIN
-    device_label: str = "pyrdmnet Broker"  # für RDM DEVICE_LABEL
+    search_domain: str = C.E133_DEFAULT_DOMAIN  # for RDM SEARCH_DOMAIN
+    device_label: str = "pyrdmnet Broker"  # for RDM DEVICE_LABEL
     uid: Uid = field(default_factory=lambda: Uid(C.ESTA_PROTOTYPE_MANUFACTURER, 0x00000001))
     cid: uuid.UUID = field(default_factory=uuid.uuid4)
     max_clients: int = 64
@@ -54,10 +54,10 @@ class BrokerConfig:
     heartbeat_timeout_s: float = C.E133_HEARTBEAT_TIMEOUT_S
     connect_timeout_s: float = 10.0
     event_file: Path | None = None
-    capture_file: Path | None = None  # Rohdaten aller Pakete als JSONL (Diagnose Live-Test)
+    capture_file: Path | None = None  # raw data of all packets as JSONL (live test diagnostics)
     capture_max_lines: int = 50000
-    llrp: bool = False  # als LLRP-Target antworten (E1.33 5.2: Pflicht für Broker im Realbetrieb)
-    llrp_network: LlrpNetwork | None = None  # Standard: Multicast auf dem Adapter von ``host``
+    llrp: bool = False  # respond as LLRP target (E1.33 5.2: mandatory for brokers in production)
+    llrp_network: LlrpNetwork | None = None  # default: multicast on the adapter of ``host``
 
 
 @dataclass
@@ -99,7 +99,7 @@ class RdmnetBroker:
             BrokerResponderInfo(uid=k.uid, scope=k.scope, search_domain=k.search_domain, device_label=k.device_label),
             event=self._event)
 
-    # ----------------------------------------------------------------- Lebenszyklus
+    # ----------------------------------------------------------------- Lifecycle
     async def start(self) -> None:
         self._server = await asyncio.start_server(self._new_connection, self.config.host, self.config.port)
         self.port = self._server.sockets[0].getsockname()[1]
@@ -111,7 +111,7 @@ class RdmnetBroker:
                                           self.responder.respond, network)
             try:
                 await self.llrp_target.start()
-            except OSError as error:  # LLRP ist eine Zusatzfunktion: Broker läuft trotzdem
+            except OSError as error:  # LLRP is an add-on: the broker keeps running anyway
                 self.llrp_target = None
                 self._event("llrp_unavailable", error=str(error))
         self._event("broker_started", host=self.config.host, port=self.port, scope=self.config.scope,
@@ -154,7 +154,7 @@ class RdmnetBroker:
             "counters": dict(self.counters),
         }
 
-    # ----------------------------------------------------------------- Ereignisse
+    # ----------------------------------------------------------------- Events
     def _event(self, kind: str, **data) -> None:
         e = {"time_utc": _now(), "event": kind, **data}
         self.events.append(e)
@@ -163,8 +163,8 @@ class RdmnetBroker:
             try:
                 with open(self.config.event_file, "a", encoding="utf-8") as f:
                     f.write(json.dumps(e, ensure_ascii=False) + "\n")
-            except OSError as error:  # Protokoll darf den Broker nie stoppen
-                log.warning("Ereignisdatei nicht schreibbar: %s", error)
+            except OSError as error:  # logging must never stop the broker
+                log.warning("Event file not writable: %s", error)
 
     def _capture(self, v: TcpConnection, direction: str, data: bytes) -> None:
         if self._capture_lines >= self.config.capture_max_lines:
@@ -178,7 +178,7 @@ class RdmnetBroker:
         except OSError:
             pass
 
-    # ----------------------------------------------------------------- Verbindung
+    # ----------------------------------------------------------------- Connection
     async def _new_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         task = asyncio.current_task()
         self._connection_tasks.add(task)
@@ -201,7 +201,7 @@ class RdmnetBroker:
             self._event("protocol_error", peer=v.peer, error=str(error))
         except asyncio.CancelledError:
             raise
-        except Exception as error:  # unerwartet: protokollieren, Verbindung schließen
+        except Exception as error:  # unexpected: log it, close the connection
             self.counters["internal_error"] += 1
             self._event("internal_error", peer=v.peer, error=repr(error))
         finally:
@@ -214,10 +214,10 @@ class RdmnetBroker:
         roots = await v.read()
         root = roots[0]
         if root.vector != C.VECTOR_ROOT_E133_BROKER:
-            raise P.ProtocolError("Erste Nachricht ist keine Broker-PDU")
+            raise P.ProtocolError("First message is not a broker PDU")
         bp = P.read_broker(root.data)
         if bp.vector != C.VECTOR_BROKER_CONNECT:
-            raise P.ProtocolError("Erste Nachricht ist kein Client Connect")
+            raise P.ProtocolError("First message is not a Client Connect")
         try:
             cd = P.read_connect(bp.data)
         except P.ProtocolError:
@@ -255,7 +255,7 @@ class RdmnetBroker:
         return self._check_uid(cd.client.uid, cd.client.cid)
 
     def _check_uid(self, uid: Uid, cid: uuid.UUID, own: _Client | None = None) -> tuple[int, Uid]:
-        """UID-Prüfung nach E1.33 9.1.5; ``eigener`` = Client, der seinen Eintrag ändert."""
+        """UID check according to E1.33 9.1.5; ``own`` = client that is changing its own entry."""
         if uid.is_dynamic_request:
             uid = self._assign_dyn_uid(uid.manufacturer & 0x7FFF, cid)
         elif not uid.is_valid_for_client or uid.is_dynamic:
@@ -297,7 +297,7 @@ class RdmnetBroker:
             await client.connection.close()
             return False
 
-    # ----------------------------------------------------------------- Nachrichten
+    # ----------------------------------------------------------------- Messages
     async def _handle_root(self, client: _Client, root: P.RootPdu) -> None:
         if root.vector == C.VECTOR_ROOT_E133_BROKER:
             await self._handle_broker(client, P.read_broker(root.data))
@@ -337,11 +337,11 @@ class RdmnetBroker:
             self.counters["broker_vector_ignored"] += 1
 
     async def _update_client_entry(self, client: _Client, data: bytes) -> None:
-        """Client Entry Update (E1.33 6.3.1.4, 9.1.6): wie ein Connect prüfen, ohne Scope.
+        """Client Entry Update (E1.33 6.3.1.4, 9.1.6): check like a Connect, without scope.
 
-        Protokoll (Vector) und CID (Header) müssen gleich bleiben; UID, Client-Typ und
-        Binding-CID (Data) dürfen sich ändern. Bei Fehler: Connect Reply mit Fehlercode,
-        Client entfernen, Verbindung schließen.
+        Protocol (vector) and CID (header) must stay the same; UID, client type and
+        binding CID (data) may change. On error: Connect Reply with error code,
+        remove the client, close the connection.
         """
         v, old = client.connection, client.entry
         try:
@@ -376,7 +376,7 @@ class RdmnetBroker:
         k = rpt.header
         if k.source != client.uid:
             self.counters["rpt_wrong_source"] += 1
-            self._event("rpt_dropped", reason="Quell-UID passt nicht zur Verbindung", uid=str(client.uid))
+            self._event("rpt_dropped", reason="Source UID does not match the connection", uid=str(client.uid))
             return
         packet = P.build_packet(C.VECTOR_ROOT_E133_RPT, self.config.cid, P.build_rpt(k, rpt.data))
 
@@ -420,7 +420,7 @@ class RdmnetBroker:
             await self._status_to(client, k, C.RPT_STATUS_UNKNOWN_VECTOR)
 
     async def _to_broker_responder(self, client: _Client, rpt: P.RptPdu) -> None:
-        """RPT-Request an die Broker-UID: vom eigenen RDM-Responder beantworten (E1.33 6.2)."""
+        """RPT request to the broker UID: answered by the broker's own RDM responder (E1.33 6.2)."""
         k = rpt.header
         if k.dest_endpoint != C.E133_NULL_ENDPOINT:
             await self._status_to(client, k, C.RPT_STATUS_UNKNOWN_ENDPOINT)
@@ -428,7 +428,7 @@ class RdmnetBroker:
         try:
             messages = P.read_request_or_notification(rpt.data, C.VECTOR_REQUEST_RDM_CMD)
             if len(messages) != 1:
-                raise P.ProtocolError("RPT-Request muss genau einen RDM-Befehl enthalten")
+                raise P.ProtocolError("RPT request must contain exactly one RDM command")
             raw = messages[0]
             request = RdmMessage.decode(raw)
         except (P.ProtocolError, RdmFormatError, ValueError):
@@ -461,6 +461,6 @@ class RdmnetBroker:
                 if now - v.last_received > self.config.heartbeat_timeout_s:
                     self.counters["heartbeat_timeout"] += 1
                     self._event("heartbeat_timeout", uid=str(c.uid))
-                    await v.close()  # Lese-Schleife endet, Client wird entfernt
+                    await v.close()  # read loop ends, client gets removed
                 elif now - v.last_sent >= self.config.heartbeat_interval_s:
                     await self._safe_send(c, v.send_broker(C.VECTOR_BROKER_NULL))

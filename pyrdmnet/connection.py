@@ -1,4 +1,4 @@
-"""Gemeinsame TCP-Verbindung für Broker und Clients (Senden mit Sperre, Zeitstempel)."""
+"""Shared TCP connection for broker and clients (locked sending, timestamps)."""
 
 from __future__ import annotations
 
@@ -19,16 +19,16 @@ class TcpConnection:
         self.last_received = time.monotonic()
         self.last_sent = time.monotonic()
         self.closed = False
-        self.capture = None  # optional: Funktion(richtung "ein"/"aus", rohdaten)
+        self.capture = None  # optional: function(direction "ein" (in) / "aus" (out), raw data)
         try:
             peer = writer.get_extra_info("peername")
             self.peer = f"{peer[0]}:{peer[1]}" if peer else "?"
-        except Exception:  # pragma: no cover - plattformabhängig
+        except Exception:  # pragma: no cover - platform-dependent
             self.peer = "?"
 
     async def send_raw(self, packet: bytes) -> None:
         if self.closed:
-            raise ConnectionError("Verbindung geschlossen")
+            raise ConnectionError("Connection closed")
         async with self._lock:
             if self.capture:
                 self.capture("aus", packet)

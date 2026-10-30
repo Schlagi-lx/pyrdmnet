@@ -1,18 +1,18 @@
-"""RDM-Responder des Brokers (ANSI E1.33, Abschnitt 6.2).
+"""RDM responder of the broker (ANSI E1.33, section 6.2).
 
-Ein Controller erreicht den Broker über eine RPT-Request-PDU mit der
-Broker-UID als Ziel und dem NULL-Endpoint. Der Broker antwortet wie ein
-RDMnet-Gerät mit einer RPT-Notification (Anfrage + Antwort).
+A controller reaches the broker via an RPT Request PDU with the broker UID
+as destination and the NULL endpoint. The broker answers like an RDMnet
+device with an RPT Notification (request + response).
 
-Unterstützt (nur GET, außer IDENTIFY_DEVICE):
+Supported (GET only, except IDENTIFY_DEVICE):
 * E1.20: SUPPORTED_PARAMETERS, DEVICE_INFO, MANUFACTURER_LABEL,
   DEVICE_MODEL_DESCRIPTION, SOFTWARE_VERSION_LABEL, DEVICE_LABEL,
-  IDENTIFY_DEVICE (GET/SET, ohne physische Wirkung)
+  IDENTIFY_DEVICE (GET/SET, no physical effect)
 * E1.33: COMPONENT_SCOPE, SEARCH_DOMAIN, BROKER_STATUS
 
-Scope, Suchdomäne und Broker-Zustand lassen sich bewusst nicht per RDM
-ändern (NACK UNSUPPORTED_COMMAND_CLASS, BROKER_STATUS meldet „Set Allowed“ = 0):
-Ein Scopewechsel würde alle Clients trennen und gehört in die Konfiguration.
+Scope, search domain and broker state deliberately cannot be changed via RDM
+(NACK UNSUPPORTED_COMMAND_CLASS, BROKER_STATUS reports "Set Allowed" = 0):
+a scope change would disconnect all clients and belongs in the configuration.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from . import constants as C
 from . import rdm_params as R
 from .rdm import RdmMessage, Uid
 
-# E1.20 Produktkategorie „Data Distribution“ (Datenverteilung)
+# E1.20 product category "Data Distribution"
 PRODUCT_CATEGORY_DATA_DISTRIBUTION = 0x0700
 
 SUPPORTED_PIDS = (
@@ -44,7 +44,7 @@ SUPPORTED_PIDS = (
 
 
 def _version_as_number(text: str) -> int:
-    """'0.4.1' -> 0x00000401 (je Teil ein Byte, für DEVICE_INFO)."""
+    """'0.4.1' -> 0x00000401 (one byte per part, for DEVICE_INFO)."""
     parts = [int(t) if t.isdigit() else 0 for t in text.split(".")[:4]]
     number = 0
     for t in parts:
@@ -53,7 +53,7 @@ def _version_as_number(text: str) -> int:
 
 
 def build_component_scope(slot: int, scope: str) -> bytes:
-    """COMPONENT_SCOPE-Antwort des Brokers: immer ohne statische Konfiguration (E1.33 7.6.2)."""
+    """COMPONENT_SCOPE response of the broker: always without static configuration (E1.33 7.6.2)."""
     return R.build_component_scope(R.ComponentScope(slot, scope))
 
 
@@ -70,7 +70,7 @@ class BrokerResponderInfo:
 
 
 class BrokerResponder:
-    """Beantwortet RDM-Befehle, die an die Broker-UID gerichtet sind."""
+    """Answers RDM commands addressed to the broker UID."""
 
     def __init__(self, data: BrokerResponderInfo, event: Callable[..., None] | None = None):
         self.data = data
@@ -78,7 +78,7 @@ class BrokerResponder:
         self._event = event or (lambda kind, **kw: None)
 
     def respond(self, a: RdmMessage) -> RdmMessage | None:
-        """Antwort auf eine RDM-Anfrage; None bei Broadcast (E1.20: keine Antwort)."""
+        """Response to an RDM request; None for broadcast (E1.20: no response)."""
         if a.dest.is_broadcast:
             return None
         nack = lambda reason: a.response(C.RESPONSE_NACK, struct.pack(">H", reason))  # noqa: E731
@@ -102,8 +102,8 @@ class BrokerResponder:
     def _get(self, pid: int, d: bytes) -> bytes | int:
         dd = self.data
         if pid == C.PID_SUPPORTED_PARAMETERS:
-            # E1.20: die Pflicht-PIDs (SUPPORTED_PARAMETERS, DEVICE_INFO, SOFTWARE_VERSION_LABEL,
-            # IDENTIFY_DEVICE) werden nicht aufgeführt
+            # E1.20: the mandatory PIDs (SUPPORTED_PARAMETERS, DEVICE_INFO, SOFTWARE_VERSION_LABEL,
+            # IDENTIFY_DEVICE) are not listed
             required_pids = {C.PID_SUPPORTED_PARAMETERS, C.PID_DEVICE_INFO, C.PID_SOFTWARE_VERSION_LABEL,
                        C.PID_IDENTIFY_DEVICE}
             return b"".join(struct.pack(">H", p) for p in SUPPORTED_PIDS if p not in required_pids)
@@ -124,11 +124,11 @@ class BrokerResponder:
             if len(d) != 2:
                 return C.NR_FORMAT_ERROR
             (slot,) = struct.unpack(">H", d)
-            if slot != 1:  # der Broker bedient genau einen Scope
+            if slot != 1:  # the broker serves exactly one scope
                 return C.NR_DATA_OUT_OF_RANGE
             return build_component_scope(1, dd.scope)
         if pid == C.PID_SEARCH_DOMAIN:
             return dd.search_domain.encode("utf-8")[:C.E133_DOMAIN_LENGTH]
         if pid == C.PID_BROKER_STATUS:
-            return bytes((0, C.E133_BROKER_ACTIVE))  # Set Allowed = 0, Zustand aktiv
+            return bytes((0, C.E133_BROKER_ACTIVE))  # Set Allowed = 0, state active
         return C.NR_UNKNOWN_PID

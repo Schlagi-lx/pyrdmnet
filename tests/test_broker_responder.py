@@ -1,4 +1,4 @@
-"""Broker-eigener RDM-Responder (E1.33 6.2): Anfragen an die Broker-UID."""
+"""Broker's own RDM responder (E1.33 6.2): requests to the broker UID."""
 
 import asyncio
 import struct
@@ -44,7 +44,7 @@ class TestResponderDirect(unittest.TestCase):
         self.assertEqual(len(d), 2 + 63 + 1 + 4 + 16 + 2)
         self.assertEqual(d[:2], b"\x00\x01")
         self.assertEqual(d[2:65].rstrip(b"\x00"), b"lab")
-        self.assertEqual(d[64], 0)  # nullterminiert
+        self.assertEqual(d[64], 0)  # null-terminated
         self.assertEqual(d[65], C.E133_NO_STATIC_CONFIG)
         self.assertEqual(self._nack(request(C.PID_COMPONENT_SCOPE, b"\x00\x02")), C.NR_DATA_OUT_OF_RANGE)
         self.assertEqual(self._nack(request(C.PID_COMPONENT_SCOPE)), C.NR_FORMAT_ERROR)
@@ -118,7 +118,7 @@ class TestResponderOverNetwork(NetworkTest):
         a = request(C.PID_DEVICE_INFO, dest=b).encode()
         header = P.RptHeader(C.VECTOR_RPT_REQUEST, self.c.uid, 0, b, 0, 4711)
         fut = self.c._pending[4711] = asyncio.get_running_loop().create_future()
-        cmds = P.build_rdm_cmd_pdu(a) * 2  # E1.33: genau ein RDM-Befehl je Request erlaubt
+        cmds = P.build_rdm_cmd_pdu(a) * 2  # E1.33: exactly one RDM command per request allowed
         data = P.flags_length(7 + len(cmds)) + struct.pack(">I", C.VECTOR_REQUEST_RDM_CMD) + cmds
         await self.c.send_rpt(header, data)
         with self.assertRaises(RptStatusError) as ctx:

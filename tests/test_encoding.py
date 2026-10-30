@@ -1,4 +1,4 @@
-"""Kodierung: RDM (E1.20), Parameterdaten, RDMnet-PDUs (E1.33)."""
+"""Encoding: RDM (E1.20), parameter data, RDMnet PDUs (E1.33)."""
 
 import struct
 import unittest
@@ -78,7 +78,7 @@ class TestRdmMessage(unittest.TestCase):
         self.assertEqual([tz.next_tn(u) for _ in range(3)], [0, 1, 2])
         for _ in range(253):
             tz.next_tn(u)
-        self.assertEqual(tz.next_tn(u), 0)  # Überlauf nach 255
+        self.assertEqual(tz.next_tn(u), 0)  # wraps around after 255
 
 
 class TestParameter(unittest.TestCase):
@@ -87,15 +87,15 @@ class TestParameter(unittest.TestCase):
         raw = R.build_device_info(di)
         self.assertEqual(len(raw), 19)
         self.assertEqual(R.read_device_info(raw), di)
-        self.assertEqual(di.product_category_text, "Scheinwerfer")
+        self.assertEqual(di.product_category_text, "Fixture")
         with self.assertRaises(RdmFormatError):
             R.read_device_info(raw[:-1])
 
     def test_sensor_scaling_and_relevance(self):
-        sd = R.SensorDefinition(2, 0x01, 0x04, 0x01, 900, 2650, 2000, 2500, 1, "Netz")
+        sd = R.SensorDefinition(2, 0x01, 0x04, 0x01, 900, 2650, 2000, 2500, 1, "Mains")
         self.assertAlmostEqual(sd.scaled(2304), 230.4)
         self.assertTrue(sd.measurement_relevant)
-        self.assertEqual(sd.unit_text, "V AC (eff.)")
+        self.assertEqual(sd.unit_text, "V AC (RMS)")
         self.assertEqual(R.read_sensor_definition(R.build_sensor_definition(sd)), sd)
         store = R.SensorDefinition(3, 0x1D, 0x1C, 0x13, 0, 1, 0, 1, 0, "Memory")
         self.assertFalse(store.measurement_relevant)
@@ -126,16 +126,16 @@ class TestPdu(unittest.TestCase):
         self.assertEqual(P.flags_length(0x12345), bytes([0xF1, 0x23, 0x45]))
         self.assertEqual(P.read_flags_length(bytes([0xF0, 0x00, 0x05, 0, 0]), 0), (5, 3))
         with self.assertRaises(P.ProtocolError):
-            P.read_flags_length(bytes([0x80, 0x00, 0x05, 0, 0]), 0)  # Vererbung
+            P.read_flags_length(bytes([0x80, 0x00, 0x05, 0, 0]), 0)  # inheritance
         with self.assertRaises(P.ProtocolError):
-            P.read_flags_length(bytes([0xF0, 0x00, 0x09]), 0)  # zu lang
+            P.read_flags_length(bytes([0xF0, 0x00, 0x09]), 0)  # too long
 
     def test_packet_layout(self):
         packet = P.build_packet(C.VECTOR_ROOT_E133_BROKER, self.cid, P.build_broker(C.VECTOR_BROKER_NULL))
         self.assertEqual(packet[:12], b"ASC-E1.17\x00\x00\x00")
         (block,) = struct.unpack(">I", packet[12:16])
         self.assertEqual(block, len(packet) - 16)
-        self.assertEqual(block, 23 + 5)  # Root-Kopf + Broker-Kopf (Referenz: BROKER_NULL_MSG_SIZE)
+        self.assertEqual(block, 23 + 5)  # root header + broker header (reference: BROKER_NULL_MSG_SIZE)
         (root,) = P.read_root_pdus(packet[16:])
         self.assertEqual((root.vector, root.cid), (C.VECTOR_ROOT_E133_BROKER, self.cid))
         self.assertEqual(P.read_broker(root.data).vector, C.VECTOR_BROKER_NULL)
@@ -145,7 +145,7 @@ class TestPdu(unittest.TestCase):
         self.assertEqual(len(e.encode()), 23 + 23)  # CLIENT_ENTRY_HEADER_SIZE + RPT_CLIENT_ENTRY_DATA_SIZE
         cd = P.ConnectData("default", 1, "local.", 1, e)
         raw = cd.encode()
-        self.assertEqual(len(raw), 3 + 63 + 231 + 46)  # CLIENT_CONNECT_COMMON_FIELD_SIZE + Eintrag
+        self.assertEqual(len(raw), 3 + 63 + 231 + 46)  # CLIENT_CONNECT_COMMON_FIELD_SIZE + entry
         z = P.read_connect(raw)
         self.assertEqual((z.scope, z.version, z.domain, z.flags, z.client.uid, z.client.type),
                          ("default", 1, "local.", 1, Uid(0xFFF0, 0), 1))

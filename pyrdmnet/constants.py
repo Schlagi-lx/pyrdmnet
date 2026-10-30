@@ -1,27 +1,27 @@
-"""Protokollkonstanten ANSI E1.20 (RDM), E1.33 (RDMnet), E1.37-7 (Endpoints).
+"""Protocol constants for ANSI E1.20 (RDM), E1.33 (RDMnet), E1.37-7 (endpoints).
 
-Alle Werte wurden am 26.10.2026 gegen die Referenzimplementierungen von ETC
-abgeglichen (nur Konstanten, kein Code übernommen):
+All values were checked on 2026-10-26 against ETC's reference implementations
+(constants only, no code taken over):
 
-* ETCLabs/RDMnet  Commit c59acb37b0248aa802c55d2dff522c47179f90df (include/rdmnet/defs.h,
+* ETCLabs/RDMnet  commit c59acb37b0248aa802c55d2dff522c47179f90df (include/rdmnet/defs.h,
   src/rdmnet/core/broker_prot.*, src/rdmnet/core/rpt_prot.*)
-* ETCLabs/RDM     Commit db1bfefab9aac96a2c790bb8d5fe079ff1a59650 (include/rdm/defs.h)
+* ETCLabs/RDM     commit db1bfefab9aac96a2c790bb8d5fe079ff1a59650 (include/rdm/defs.h)
 
-Der Normtext selbst lag nicht vor. Vor einem Realtest mit Fremdgeräten ist
-ein Abgleich mit E1.33-2019 sinnvoll (siehe ARCHITEKTUR.md, offene Punkte).
+The standard text itself was not available. Before a real-world test with third-party devices,
+a check against E1.33-2019 is advisable (see ARCHITEKTUR.md, open issues).
 """
 
-# ---------------------------------------------------------------- ACN-Rahmen
-ACN_TCP_PREAMBLE = b"ASC-E1.17\x00\x00\x00"  # 12 Byte, danach u32 PDU-Blockgröße
-ACN_PDU_FLAGS = 0xF0  # L|V|H|D gesetzt, 20-Bit-Länge (3 Byte Flags+Länge)
+# ---------------------------------------------------------------- ACN framing
+ACN_TCP_PREAMBLE = b"ASC-E1.17\x00\x00\x00"  # 12 bytes, followed by u32 PDU block size
+ACN_PDU_FLAGS = 0xF0  # L|V|H|D set, 20-bit length (3 bytes flags+length)
 
 VECTOR_ROOT_E133_RPT = 0x00000005
 VECTOR_ROOT_E133_BROKER = 0x00000009
 VECTOR_ROOT_LLRP = 0x0000000A
 VECTOR_ROOT_E133_EPT = 0x0000000B
 
-# ---------------------------------------------------------------- LLRP (E1.33 Abschnitt 5, Tabelle A-2)
-ACN_UDP_PREAMBLE = b"\x00\x10\x00\x00ASC-E1.17\x00\x00\x00"  # Präambel 16, Postambel 0, ACN-Kennung
+# ---------------------------------------------------------------- LLRP (E1.33 section 5, table A-2)
+ACN_UDP_PREAMBLE = b"\x00\x10\x00\x00ASC-E1.17\x00\x00\x00"  # preamble 16, postamble 0, ACN identifier
 LLRP_IPV4_REQUEST = "239.255.250.133"  # Manager -> Targets
 LLRP_IPV4_RESPONSE = "239.255.250.134"  # Targets -> Manager
 LLRP_PORT = 5569
@@ -35,15 +35,15 @@ VECTOR_LLRP_PROBE_REPLY = 0x00000002
 VECTOR_LLRP_RDM_CMD = 0x00000003
 VECTOR_PROBE_REQUEST_DATA = 0x01
 VECTOR_PROBE_REPLY_DATA = 0x01
-LLRP_FILTER_CLIENT_CONN_INACTIVE = 0x0001  # Client nicht mit Broker verbunden
+LLRP_FILTER_CLIENT_CONN_INACTIVE = 0x0001  # client not connected to a broker
 LLRP_FILTER_BROKERS_ONLY = 0x0002
 LLRP_TYPE_DEVICE = 0x00
 LLRP_TYPE_CONTROLLER = 0x01
 LLRP_TYPE_BROKER = 0x02
 LLRP_TYPE_NON_RDMNET = 0xFF
-LLRP_TYPE_TEXT = {0x00: "Gerät", 0x01: "Controller", 0x02: "Broker", 0xFF: "nur LLRP"}
+LLRP_TYPE_TEXT = {0x00: "Device", 0x01: "Controller", 0x02: "Broker", 0xFF: "LLRP only"}
 
-# ---------------------------------------------------------------- E1.33 allgemein
+# ---------------------------------------------------------------- E1.33 general
 E133_VERSION = 1
 E133_DEFAULT_SCOPE = "default"
 E133_DEFAULT_DOMAIN = "local."
@@ -63,7 +63,7 @@ E133_RPT_ALL_CONTROLLERS = 0xFFFCFFFFFFFF
 E133_RPT_ALL_DEVICES = 0xFFFDFFFFFFFF
 E133_DNSSD_TYPE = "_rdmnet._tcp.local."
 
-# Broker-PDU-Vektoren (2 Byte)
+# Broker PDU vectors (2 bytes)
 VECTOR_BROKER_CONNECT = 0x0001
 VECTOR_BROKER_CONNECT_REPLY = 0x0002
 VECTOR_BROKER_CLIENT_ENTRY_UPDATE = 0x0003
@@ -82,7 +82,7 @@ VECTOR_BROKER_NULL = 0x000F
 
 BROKER_CONNECT_FLAG_INCREMENTAL = 0x01
 
-# Connect-Rückmeldecodes
+# Connect reply codes
 E133_CONNECT_OK = 0x0000
 E133_CONNECT_SCOPE_MISMATCH = 0x0001
 E133_CONNECT_CAPACITY_EXCEEDED = 0x0002
@@ -92,11 +92,11 @@ E133_CONNECT_INVALID_UID = 0x0005
 
 CONNECT_CODE_TEXT = {
     0: "OK",
-    1: "Scope stimmt nicht überein",
-    2: "Broker-Kapazität erschöpft",
-    3: "UID bereits verbunden",
-    4: "Ungültiger Client-Eintrag",
-    5: "Ungültige UID",
+    1: "Scope mismatch",
+    2: "Broker capacity exceeded",
+    3: "UID already connected",
+    4: "Invalid client entry",
+    5: "Invalid UID",
 }
 
 E133_DYN_UID_OK = 0x0000
@@ -113,15 +113,15 @@ E133_CLIENT_PROTOCOL_EPT = 0x0000000B
 RPT_CLIENT_TYPE_DEVICE = 0x00
 RPT_CLIENT_TYPE_CONTROLLER = 0x01
 
-# RPT-Vektoren (4 Byte)
+# RPT vectors (4 bytes)
 VECTOR_RPT_REQUEST = 0x00000001
 VECTOR_RPT_STATUS = 0x00000002
 VECTOR_RPT_NOTIFICATION = 0x00000003
-VECTOR_REQUEST_RDM_CMD = 0x00000001  # 4 Byte im Request-PDU
-VECTOR_NOTIFICATION_RDM_CMD = 0x00000001  # 4 Byte im Notification-PDU
-VECTOR_RDM_CMD_RDM_DATA = 0xCC  # = RDM-Startcode
+VECTOR_REQUEST_RDM_CMD = 0x00000001  # 4 bytes in the request PDU
+VECTOR_NOTIFICATION_RDM_CMD = 0x00000001  # 4 bytes in the notification PDU
+VECTOR_RDM_CMD_RDM_DATA = 0xCC  # = RDM start code
 
-# RPT-Status-Vektoren (2 Byte)
+# RPT status vectors (2 bytes)
 RPT_STATUS_UNKNOWN_RPT_UID = 0x0001
 RPT_STATUS_RDM_TIMEOUT = 0x0002
 RPT_STATUS_RDM_INVALID_RESPONSE = 0x0003
@@ -133,15 +133,15 @@ RPT_STATUS_INVALID_MESSAGE = 0x0008
 RPT_STATUS_INVALID_COMMAND_CLASS = 0x0009
 
 RPT_STATUS_TEXT = {
-    1: "Unbekannte RPT-UID",
-    2: "RDM-Zeitüberschreitung am Gateway",
-    3: "Ungültige RDM-Antwort",
-    4: "Unbekannte RDM-UID",
-    5: "Unbekannter Endpoint",
-    6: "Broadcast abgeschlossen",
-    7: "Unbekannter Vektor",
-    8: "Ungültige Nachricht",
-    9: "Ungültige Command Class",
+    1: "Unknown RPT UID",
+    2: "RDM timeout at gateway",
+    3: "Invalid RDM response",
+    4: "Unknown RDM UID",
+    5: "Unknown endpoint",
+    6: "Broadcast complete",
+    7: "Unknown vector",
+    8: "Invalid message",
+    9: "Invalid command class",
 }
 
 # E1.33-PIDs
@@ -153,7 +153,7 @@ PID_BROKER_STATUS = 0x0803
 # ---------------------------------------------------------------- E1.20 RDM
 RDM_STARTCODE = 0xCC
 RDM_SUB_STARTCODE = 0x01
-RDM_HEADER_LENGTH = 24  # Startcode bis einschließlich PDL
+RDM_HEADER_LENGTH = 24  # start code up to and including PDL
 RDM_MAX_PDL = 231
 RDM_ROOT_DEVICE = 0x0000
 RDM_ALL_SUBDEVICES = 0xFFFF
@@ -171,7 +171,7 @@ RESPONSE_NACK = 0x02
 RESPONSE_ACK_OVERFLOW = 0x03
 
 NACK_TEXT = {
-    0x0000: "UNKNOWN_PID – Parameter nicht unterstützt",
+    0x0000: "UNKNOWN_PID – parameter not supported",
     0x0001: "FORMAT_ERROR",
     0x0002: "HARDWARE_FAULT",
     0x0003: "PROXY_REJECT",
@@ -193,7 +193,7 @@ NR_DATA_OUT_OF_RANGE = 0x0006
 NR_SUB_DEVICE_OUT_OF_RANGE = 0x0009
 NR_ACTION_NOT_SUPPORTED = 0x000B  # E1.37-1
 
-# PIDs (Auswahl, nur lesend genutzt)
+# PIDs (selection, used read-only)
 PID_QUEUED_MESSAGE = 0x0020
 PID_STATUS_MESSAGES = 0x0030
 PID_SUPPORTED_PARAMETERS = 0x0050
@@ -225,8 +225,8 @@ PID_DISCOVERY_STATE = 0x0907
 PID_ENDPOINT_RESPONDERS = 0x090B
 ENDPOINT_TYPE_VIRTUAL = 0x00
 ENDPOINT_TYPE_PHYSICAL = 0x01
-ENDPOINT_MODE_TEXT = {0x00: "aus", 0x01: "Eingang", 0x02: "Ausgang"}
-DISCOVERY_STATE_TEXT = {0x00: "unvollständig", 0x01: "incremental", 0x02: "vollständig", 0x04: "nicht aktiv"}
+ENDPOINT_MODE_TEXT = {0x00: "Disabled", 0x01: "Input", 0x02: "Output"}
+DISCOVERY_STATE_TEXT = {0x00: "incomplete", 0x01: "incremental", 0x02: "full", 0x04: "not active"}
 
 PID_NAMES = {
     PID_SUPPORTED_PARAMETERS: "SUPPORTED_PARAMETERS",
@@ -255,44 +255,44 @@ PID_NAMES = {
     PID_COMPONENT_SCOPE: "COMPONENT_SCOPE",
 }
 
-# Sensortypen (E1.20 Tabelle A-12)
+# Sensor types (E1.20 table A-12)
 SENSOR_TYPE_TEXT = {
-    0x00: "Temperatur", 0x01: "Spannung", 0x02: "Strom", 0x03: "Frequenz",
-    0x04: "Widerstand", 0x05: "Leistung", 0x06: "Masse", 0x07: "Länge",
-    0x08: "Fläche", 0x09: "Volumen", 0x0A: "Dichte", 0x0B: "Geschwindigkeit",
-    0x0C: "Beschleunigung", 0x0D: "Kraft", 0x0E: "Energie", 0x0F: "Druck",
-    0x10: "Zeit", 0x11: "Winkel", 0x12: "Position X", 0x13: "Position Y",
-    0x14: "Position Z", 0x15: "Winkelgeschwindigkeit", 0x16: "Lichtstärke",
-    0x17: "Lichtstrom", 0x18: "Beleuchtungsstärke", 0x19: "Chrominanz Rot",
-    0x1A: "Chrominanz Grün", 0x1B: "Chrominanz Blau", 0x1C: "Kontakte",
-    0x1D: "Memory", 0x1E: "Elemente", 0x1F: "Luftfeuchte",
-    0x20: "Zähler 16 Bit", 0x7F: "Sonstiges",
+    0x00: "Temperature", 0x01: "Voltage", 0x02: "Current", 0x03: "Frequency",
+    0x04: "Resistance", 0x05: "Power", 0x06: "Mass", 0x07: "Length",
+    0x08: "Area", 0x09: "Volume", 0x0A: "Density", 0x0B: "Velocity",
+    0x0C: "Acceleration", 0x0D: "Force", 0x0E: "Energy", 0x0F: "Pressure",
+    0x10: "Time", 0x11: "Angle", 0x12: "Position X", 0x13: "Position Y",
+    0x14: "Position Z", 0x15: "Angular velocity", 0x16: "Luminous intensity",
+    0x17: "Luminous flux", 0x18: "Illuminance", 0x19: "Chrominance red",
+    0x1A: "Chrominance green", 0x1B: "Chrominance blue", 0x1C: "Contacts",
+    0x1D: "Memory", 0x1E: "Items", 0x1F: "Humidity",
+    0x20: "Counter 16 bit", 0x7F: "Other",
 }
 
-# Für die Messung sinnvolle Sensortypen: beeinflussen Lichtausbeute/Spektrum
-# oder dokumentieren den Betriebszustand des Scheinwerfers während der Messung.
+# Sensor types relevant for the measurement: they affect light output/spectrum
+# or document the operating state of the fixture during the measurement.
 MEASUREMENT_RELEVANT_SENSOR_TYPES = frozenset({
-    0x00,  # Temperatur (LED-Sperrschicht, Gehäuse, Treiber)
-    0x01,  # Spannung (Versorgung)
-    0x02,  # Strom
-    0x03,  # Frequenz (Netz, PWM, Lüfter falls so gemeldet)
-    0x05,  # Leistung
-    0x16, 0x17, 0x18,  # interne Licht-/Lichtstromsensoren
-    0x19, 0x1A, 0x1B,  # interne Farbsensoren
-    0x1F,  # Luftfeuchte
+    0x00,  # temperature (LED junction, housing, driver)
+    0x01,  # voltage (supply)
+    0x02,  # current
+    0x03,  # frequency (mains, PWM, fan if reported as such)
+    0x05,  # power
+    0x16, 0x17, 0x18,  # internal light/luminous flux sensors
+    0x19, 0x1A, 0x1B,  # internal colour sensors
+    0x1F,  # humidity
 })
 
-# Einheiten (E1.20 Tabelle A-13)
+# Units (E1.20 table A-13)
 UNIT_TEXT = {
-    0x00: "", 0x01: "°C", 0x02: "V DC", 0x03: "V AC (Spitze)", 0x04: "V AC (eff.)",
-    0x05: "A DC", 0x06: "A AC (Spitze)", 0x07: "A AC (eff.)", 0x08: "Hz",
+    0x00: "", 0x01: "°C", 0x02: "V DC", 0x03: "V AC (peak)", 0x04: "V AC (RMS)",
+    0x05: "A DC", 0x06: "A AC (peak)", 0x07: "A AC (RMS)", 0x08: "Hz",
     0x09: "Ω", 0x0A: "W", 0x0B: "kg", 0x0C: "m", 0x0D: "m²", 0x0E: "m³",
     0x0F: "kg/m³", 0x10: "m/s", 0x11: "m/s²", 0x12: "N", 0x13: "J", 0x14: "Pa",
     0x15: "s", 0x16: "°", 0x17: "sr", 0x18: "cd", 0x19: "lm", 0x1A: "lx",
-    0x1B: "IRE", 0x1C: "Byte",
+    0x1B: "IRE", 0x1C: "bytes",
 }
 
-# Präfixe (E1.20 Tabelle A-14) -> Zehnerexponent
+# Prefixes (E1.20 table A-14) -> power-of-ten exponent
 PREFIX_EXPONENT = {
     0x00: 0, 0x01: -1, 0x02: -2, 0x03: -3, 0x04: -6, 0x05: -9, 0x06: -12,
     0x07: -15, 0x08: -18, 0x09: -21, 0x0A: -24,
@@ -300,13 +300,13 @@ PREFIX_EXPONENT = {
     0x18: 18, 0x19: 21, 0x1A: 24,
 }
 
-# Produktkategorien (Auswahl, obere Byte-Gruppen E1.20 Tabelle A-5)
+# Product categories (selection, high-byte groups of E1.20 table A-5)
 PRODUCT_CATEGORY_GROUP = {
-    0x00: "nicht angegeben", 0x01: "Scheinwerfer", 0x02: "Scheinwerfer-Zubehör",
-    0x03: "Projektor", 0x04: "Atmosphäre", 0x05: "Dimmer", 0x06: "Stromversorgung",
-    0x07: "Szenerie", 0x08: "Datenverteilung", 0x09: "Pult/Steuerung",
-    0x0A: "Audio/Video", 0x71: "Test", 0x7F: "Sonstiges",
+    0x00: "Not declared", 0x01: "Fixture", 0x02: "Fixture accessory",
+    0x03: "Projector", 0x04: "Atmospheric", 0x05: "Dimmer", 0x06: "Power",
+    0x07: "Scenic", 0x08: "Data distribution", 0x09: "Console/control",
+    0x0A: "Audio/video", 0x71: "Test", 0x7F: "Other",
 }
 
-# Herstellerkennung für Prototypen (ESTA reserviert 0x7FF0–0x7FFF)
+# Manufacturer ID for prototypes (ESTA reserves 0x7FF0–0x7FFF)
 ESTA_PROTOTYPE_MANUFACTURER = 0x7FF0

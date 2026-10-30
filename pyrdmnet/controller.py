@@ -1,11 +1,11 @@
-"""RDMnet-Controller: RDM GET frei, RDM SET nur eingeschränkt.
+"""RDMnet controller: RDM GET unrestricted, RDM SET only restricted.
 
-Entscheidung 26.10.2026 (Variante b): Die Software darf DMX-Modus und
-Startadresse am Gerät setzen. Sicherungen:
-* SET nur für die PIDs in :data:`ERLAUBTE_SET_PIDS`
-* SET nur bei aktiver Schreibfreigabe (``schreibfreigabe = True``, gilt je Sitzung)
-* Discovery-Befehle werden nie gesendet
-Jede andere Schreibanfrage wird vor dem Senden abgewiesen (:class:`SchreibSperreFehler`).
+Decision 2026-10-26 (option b): the software may set DMX mode and
+start address on the device. Safeguards:
+* SET only for the PIDs in :data:`ALLOWED_SET_PIDS`
+* SET only with active write permission (``write_enabled = True``, per session)
+* Discovery commands are never sent
+Any other write request is rejected before sending (:class:`WriteLockError`).
 """
 
 from __future__ import annotations
@@ -23,14 +23,14 @@ log = logging.getLogger("pyrdmnet.controller")
 
 
 class RdmError(Exception):
-    """Oberklasse aller Fehler einer RDM-Abfrage."""
+    """Base class of all errors of an RDM request."""
 
 
 ALLOWED_SET_PIDS = frozenset({C.PID_DMX_PERSONALITY, C.PID_DMX_START_ADDRESS, C.PID_IDENTIFY_DEVICE})
 
 
 class WriteLockError(RdmError):
-    """Ein schreibender RDM-Befehl ist nicht erlaubt (PID nicht freigegeben oder keine Freigabe)."""
+    """A writing RDM command is not allowed (PID not permitted or no write permission)."""
 
 
 class RdmTimeoutError(RdmError):
@@ -40,7 +40,7 @@ class RdmTimeoutError(RdmError):
 class RdmNackError(RdmError):
     def __init__(self, pid: int, reason: int):
         self.pid, self.reason = pid, reason
-        super().__init__(f"NACK für {C.PID_NAMES.get(pid, hex(pid))}: {C.NACK_TEXT.get(reason, hex(reason))}")
+        super().__init__(f"NACK for {C.PID_NAMES.get(pid, hex(pid))}: {C.NACK_TEXT.get(reason, hex(reason))}")
 
 
 class RptStatusError(RdmError):
@@ -50,13 +50,13 @@ class RptStatusError(RdmError):
 
 
 class RdmResponseError(RdmError):
-    """Antwort formal ungültig oder passt nicht zur Anfrage."""
+    """Response formally invalid or does not match the request."""
 
 
 class RdmnetController(RptClient):
     def __init__(self, uid: Uid | None = None, scope: str = C.E133_DEFAULT_SCOPE, cid: uuid.UUID | None = None,
                  **kwargs):
-        # Standard: dynamische UID im ESTA-Prototypenbereich anfordern
+        # default: request a dynamic UID in the ESTA prototype range
         uid = uid or Uid(0x8000 | C.ESTA_PROTOTYPE_MANUFACTURER, 0)
         super().__init__(C.RPT_CLIENT_TYPE_CONTROLLER, uid, scope, cid, incremental=True, **kwargs)
         self.clients: dict[Uid, P.ClientEntry] = {}
@@ -67,9 +67,9 @@ class RdmnetController(RptClient):
         self.unsolicited_messages: list[tuple[Uid, int, bytes]] = []
         self.ack_timer_max_s = 10.0
         self.ack_overflow_max = 32
-        self.write_enabled = False  # je Sitzung aktiv setzen (Checkliste vor Ort)
+        self.write_enabled = False  # enable explicitly per session (on-site checklist)
 
-    # ----------------------------------------------------------------- Clientliste
+    # ----------------------------------------------------------------- Client list
     async def _after_connect(self) -> None:
         self._client_list_ready.clear()
         await self.send_broker(C.VECTOR_BROKER_FETCH_CLIENT_LIST)
@@ -77,7 +77,7 @@ class RdmnetController(RptClient):
     async def _after_disconnect(self, reason: str) -> None:
         for f in self._pending.values():
             if not f.done():
-                f.set_exception(RdmnetConnectionError(f"Verbindung getrennt: {reason}"))
+                f.set_exception(RdmnetConnectionError(f"Connection closed: {reason}"))
         self._pending.clear()
 
     async def client_list(self, timeout_s: float = 5.0, refresh: bool = False) -> dict[Uid, P.ClientEntry]:
@@ -98,7 +98,7 @@ class RdmnetController(RptClient):
         elif bp.vector in (C.VECTOR_BROKER_CLIENT_ADD, C.VECTOR_BROKER_CLIENT_ENTRY_CHANGE):
             for e in P.read_client_entries(bp.data):
                 if e.protocol == C.E133_CLIENT_PROTOCOL_RPT:
-                    # Entry Change kann die UID ändern: alten Eintrag derselben CID ersetzen
+                    # Entry Change may change the UID: replace the old entry with the same CID
                     for old in [u for u, a in self.clients.items() if a.cid == e.cid]:
                         del self.clients[old]
                     self.clients[e.uid] = e
@@ -106,7 +106,7 @@ class RdmnetController(RptClient):
             for e in P.read_client_entries(bp.data):
                 self.clients.pop(e.uid, None)
 
-    # ----------------------------------------------------------------- RPT-Empfang
+    # ----------------------------------------------------------------- RPT receive
     async def _on_rpt(self, rpt: P.RptPdu) -> None:
         k = rpt.header
         f = self._pending.get(k.sequence)
@@ -141,8 +141,8 @@ class RdmnetController(RptClient):
             await self.send_rpt(header, P.build_request(request.encode()))
             messages = await asyncio.wait_for(fut, timeout_s)
         except asyncio.TimeoutError as error:
-            raise RdmTimeoutError(f"Keine Antwort auf {C.PID_NAMES.get(request.pid, hex(request.pid))} "
-                                f"von {request.dest} binnen {timeout_s:.1f} s") from error
+            raise RdmTimeoutError(f"No response to {C.PID_NAMES.get(request.pid, hex(request.pid))} "
+                                f"from {request.dest} within {timeout_s:.1f} s") from error
         finally:
             self._pending.pop(seq, None)
         return self._select_response(request, messages)
@@ -151,28 +151,28 @@ class RdmnetController(RptClient):
         if cc == C.CC_GET:
             return
         if cc != C.CC_SET:
-            raise WriteLockError("Discovery-Befehle sendet das Messlabor nicht")
+            raise WriteLockError("The measurement lab does not send discovery commands")
         if pid not in ALLOWED_SET_PIDS:
-            raise WriteLockError(f"SET für {C.PID_NAMES.get(pid, hex(pid))} nicht freigegeben")
+            raise WriteLockError(f"SET for {C.PID_NAMES.get(pid, hex(pid))} not permitted")
         if not self.write_enabled:
-            raise WriteLockError("Keine Schreibfreigabe für diese Sitzung")
+            raise WriteLockError("No write permission for this session")
 
     @staticmethod
     def _select_response(request: RdmMessage, messages: list[bytes]) -> RdmMessage:
-        """Notification enthält Anfrage und Antwort; die passende Antwort heraussuchen."""
+        """Notification contains request and response; pick out the matching response."""
         for raw in messages:
             try:
                 n = RdmMessage.decode(raw)
             except RdmFormatError as error:
-                raise RdmResponseError(f"RDM-Antwort ungültig: {error}") from error
+                raise RdmResponseError(f"RDM response invalid: {error}") from error
             if not n.is_response:
                 continue
             expected_cc = C.CC_GET_RESPONSE if request.command_class == C.CC_GET else C.CC_SET_RESPONSE
             if (n.pid != request.pid or n.transaction != request.transaction or n.source != request.dest
                     or n.command_class != expected_cc):
-                raise RdmResponseError(f"Antwort passt nicht zur Anfrage (PID {n.pid:#06x}, TN {n.transaction})")
+                raise RdmResponseError(f"Response does not match the request (PID {n.pid:#06x}, TN {n.transaction})")
             return n
-        raise RdmResponseError("Notification ohne RDM-Antwort")
+        raise RdmResponseError("Notification without RDM response")
 
     async def rdm_get(self, rpt_dest: Uid, pid: int, data: bytes = b"", endpoint: int = C.E133_NULL_ENDPOINT,
                       rdm_dest: Uid | None = None, subdevice: int = C.RDM_ROOT_DEVICE,
@@ -182,20 +182,20 @@ class RdmnetController(RptClient):
     async def rdm_set(self, rpt_dest: Uid, pid: int, data: bytes, endpoint: int = C.E133_NULL_ENDPOINT,
                       rdm_dest: Uid | None = None, subdevice: int = C.RDM_ROOT_DEVICE,
                       timeout_s: float = 3.0) -> bytes:
-        """RDM SET – nur für ERLAUBTE_SET_PIDS und mit aktiver Schreibfreigabe."""
+        """RDM SET - only for ALLOWED_SET_PIDS and with active write permission."""
         self._check_write_permission(C.CC_SET, pid)
         return await self._rdm_command(C.CC_SET, rpt_dest, pid, data, endpoint, rdm_dest, subdevice, timeout_s)
 
     async def _rdm_command(self, cc: int, rpt_dest: Uid, pid: int, data: bytes, endpoint: int,
                           rdm_dest: Uid | None, subdevice: int, timeout_s: float) -> bytes:
-        """RDM GET/SET über RDMnet. Behandelt ACK_TIMER und ACK_OVERFLOW.
+        """RDM GET/SET over RDMnet. Handles ACK_TIMER and ACK_OVERFLOW.
 
-        rpt_ziel: UID des RDMnet-Geräts (Gateway oder natives Gerät)
-        rdm_ziel: UID des RDM-Responders (Standard: rpt_ziel, also Default-Responder)
-        endpoint: 0 = Default-Responder, >0 = Gateway-Port
+        rpt_dest: UID of the RDMnet device (gateway or native device)
+        rdm_dest: UID of the RDM responder (default: rpt_dest, i.e. the default responder)
+        endpoint: 0 = default responder, >0 = gateway port
         """
         if not self.connected:
-            raise RdmnetConnectionError("Nicht mit Broker verbunden")
+            raise RdmnetConnectionError("Not connected to broker")
         rdm_dest = rdm_dest or rpt_dest
         total = b""
         overflow = 0
@@ -216,16 +216,16 @@ class RdmnetController(RptClient):
                 pause = max(tenths, 1) / 10.0
                 waited += pause
                 if waited > self.ack_timer_max_s:
-                    raise RdmTimeoutError(f"ACK_TIMER summiert über {self.ack_timer_max_s} s")
+                    raise RdmTimeoutError(f"ACK_TIMER total exceeds {self.ack_timer_max_s} s")
                 await asyncio.sleep(pause)
                 if cc == C.CC_SET:
-                    # SET wird nicht wiederholt (sonst doppelt ausgeführt); Ergebnis per Rücklesen prüfen
+                    # SET is not repeated (would be executed twice); verify the result by reading back
                     return b""
-                continue  # E1.20 sieht QUEUED_MESSAGE vor; hier: dieselbe GET-Anfrage wiederholen
+                continue  # E1.20 provides QUEUED_MESSAGE; here: repeat the same GET request
             if type == C.RESPONSE_ACK_OVERFLOW:
                 total += response.data
                 overflow += 1
                 if overflow > self.ack_overflow_max:
-                    raise RdmResponseError("Zu viele ACK_OVERFLOW-Teile")
+                    raise RdmResponseError("Too many ACK_OVERFLOW parts")
                 continue
-            raise RdmResponseError(f"Unbekannter Antworttyp {type}")
+            raise RdmResponseError(f"Unknown response type {type}")

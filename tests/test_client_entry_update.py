@@ -1,4 +1,4 @@
-"""Client Entry Update (E1.33 6.3.1.4, 9.1.6): Client-Eintrag ohne Neuverbindung ändern."""
+"""Client Entry Update (E1.33 6.3.1.4, 9.1.6): change the client entry without reconnecting."""
 
 import asyncio
 import unittest
@@ -58,8 +58,8 @@ class TestClientEntryUpdate(unittest.IsolatedAsyncioTestCase):
         self.assertIn(new, self.b._clients)
         self.assertNotIn(DEVICE, self.b._clients)
         await wait_until(lambda: new in self.c.clients)
-        self.assertNotIn(DEVICE, self.c.clients)  # alter Eintrag derselben CID ersetzt
-        # alte UID ist wieder frei
+        self.assertNotIn(DEVICE, self.c.clients)  # old entry with the same CID replaced
+        # old UID is free again
         k = RptClient(C.RPT_CLIENT_TYPE_DEVICE, DEVICE)
         await k.connect("127.0.0.1", self.b.port)
         await k.disconnect()
@@ -75,13 +75,13 @@ class TestClientEntryUpdate(unittest.IsolatedAsyncioTestCase):
         await wait_until(lambda: DEVICE not in self.c.clients)
         self.assertNotIn(DEVICE, self.b._clients)
         self.assertEqual(self.b.counters["entry_update_rejected"], 1)
-        self.assertIn(other.uid, self.b._clients)  # der andere bleibt unberührt
+        self.assertIn(other.uid, self.b._clients)  # the other client stays untouched
 
     async def test_invalid_uid_disconnects(self):
         with self.assertRaises(RdmnetConnectionError) as ctx:
             await self.g.update_entry(uid=Uid(0x7FF0, 0xFFFFFFFF))
         self.assertEqual(ctx.exception.code, C.E133_CONNECT_INVALID_UID)
-        with self.assertRaises(RdmnetConnectionError):  # dynamische UID als feste angegeben
+        with self.assertRaises(RdmnetConnectionError):  # dynamic UID given as a static one
             await self.c.update_entry(uid=self.c.uid)
 
     async def test_change_cid_not_allowed(self):
@@ -105,7 +105,7 @@ class TestClientEntryUpdate(unittest.IsolatedAsyncioTestCase):
         k = RptClient(C.RPT_CLIENT_TYPE_DEVICE, Uid(0x7FF0, 0x20))
         await k.connect("127.0.0.1", self.b.port)
         await asyncio.sleep(0.1)
-        self.assertNotIn(k.uid, self.c.clients)  # keine Client-Add-Meldung mehr
+        self.assertNotIn(k.uid, self.c.clients)  # no more Client Add messages
         await k.disconnect()
 
 

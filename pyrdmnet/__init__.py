@@ -1,15 +1,15 @@
-"""pyrdmnet – eigener RDMnet-Broker (ANSI E1.33) und Controller.
+"""pyrdmnet – a standalone RDMnet broker (ANSI E1.33) and controller.
 
-Entstanden im Projekt „GelMatch“ (Vermessung von Scheinwerfern). Das Modul ist eigenständig
-lauffähig; :mod:`pyrdmnet.fassade` bietet eine synchrone Schnittstelle zum Einbinden.
+Originated in the "GelMatch" project (measurement of fixtures). The module runs
+standalone; :mod:`pyrdmnet.facade` provides a synchronous interface for embedding.
 
-Grundsätze:
-* RDM SET nur für DMX-Modus, Startadresse und Identify, nur mit
-  Schreibfreigabe je Sitzung; jede Änderung wird zurückgelesen.
-* RDM ist eine Begleitinformation: Ein RDM-Ausfall blockiert keine Messung,
-  eine festgestellte Einstellungsabweichung schon.
-* Keine externen Abhängigkeiten (nur Python-Standardbibliothek).
-  mDNS über Bonjour (dns-sd, auf macOS vorhanden), sonst optional ``zeroconf``.
+Principles:
+* RDM SET only for DMX mode, start address and identify, only with
+  per-session write permission; every change is read back.
+* RDM is supplementary information: an RDM failure does not block a measurement,
+  a detected settings deviation does.
+* No external dependencies (Python standard library only).
+  mDNS via Bonjour (dns-sd, available on macOS), otherwise optionally ``zeroconf``.
 """
 
 __version__ = "0.4.1"
