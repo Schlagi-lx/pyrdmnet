@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Fair queuing in the broker (E1.33 9.2.10): per RPT client at most `BrokerConfig.device_window` (4) requests are in
+  flight; further requests wait in one queue per controller and are sent round-robin, so each of N busy controllers
+  gets at least 1/N of a device's bandwidth and an idle controller's share goes to the others. A request without an
+  answer frees its slot after `request_timeout_s` (5 s); at most `max_queued_per_controller` (100) requests wait per
+  controller and device (more are dropped, counter `request_queue_full`). When a device leaves, its waiting and
+  in-flight requests are answered with Unknown RPT UID at once; when a controller leaves, its requests are removed.
+  `device_window=0` forwards at once as before. The broker status shows `queued_requests`.
 - IPv6 for broker connections: `BrokerConfig.host` may be an IPv6 address, `BrokerConfig.extra_hosts` adds further
   listen addresses on the same port (e.g. `("::",)` next to an IPv4 host; CLI `broker --ipv6 ::`,
   `RdmConfig.broker_extra_hosts`); `RdmnetBroker.addresses`. Clients connect over IPv4 or IPv6.

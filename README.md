@@ -15,7 +15,7 @@ through a synchronous interface.
 
 | | |
 |---|---|
-| Software tests | 216/216 passing on Linux, macOS and Windows (Python 3.10–3.13, standard library only) |
+| Software tests | 222/222 passing on Linux, macOS and Windows (Python 3.10–3.13, standard library only) |
 | Real-world test | with an **LSS MasterPort 2** (firmware 2.13) as RDMnet gateway and an **ETC ColorSource PAR**: broker discovery via mDNS, connection, finding devices, reading, setting mode/start address and reading back (tested with 0.4) |
 | Other gateways/devices | not tested – feedback welcome |
 
@@ -25,6 +25,8 @@ No E1.33 conformance testing, no certification. Use at your own risk (see licens
 
 - **Broker** per ANSI E1.33 (asyncio): connect with scope check, dynamic UIDs, client list, RPT forwarding
   (including broadcast), heartbeat, packet capture as JSONL, Client Entry Update (change an entry without reconnecting)
+- **Fair queuing** (E1.33 9.2.10): the broker keeps at most `device_window` requests (default 4) in flight per device
+  and sends waiting requests of several controllers round-robin, so a busy controller cannot starve the others
 - **EPT** (E1.33 section 8): the broker accepts EPT clients, keeps their client list and forwards EPT data between
   them, including one-to-many messages packed with PDU inheritance; `EptClient` for own tools and tests
 - **Broker RDM responder**: controllers can query the broker itself (`COMPONENT_SCOPE`, `SEARCH_DOMAIN`,

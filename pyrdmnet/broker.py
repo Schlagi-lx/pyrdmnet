@@ -16,8 +16,13 @@ Scope of V0.1:
 * EPT clients (E1.33 section 8, 9.3): own client list, forwarding of EPT PDUs between
   EPT clients (inherited PDUs are split per destination), Unknown CID / Unknown Vector status
 * LLRP target (optional, ``BrokerConfig.llrp``)
+* Fair queuing of controller requests (9.2.10): per RPT client at most ``device_window``
+  requests are in flight; further requests wait in one queue per controller and are sent
+  round-robin, so each of N busy controllers gets at least 1/N of the client's bandwidth
+  while an idle controller's share goes to the busy ones.
+* Client Redirect IPv4/IPv6 on request (:meth:`RdmnetBroker.redirect_client`)
 
-Not included: redirect; the broker does not implement an EPT protocol itself.
+Not included: the broker does not implement an EPT protocol itself.
 DNS-SD registration via :mod:`pyrdmnet.dnssd`.
 """
 
@@ -62,16 +67,34 @@ class BrokerConfig:
     event_file: Path | None = None
     capture_file: Path | None = None  # raw data of all packets as JSONL (live test diagnostics)
     capture_max_lines: int = 50000
+    # fair queuing (9.2.10): requests in flight per RPT client; 0 = forward at once without queuing
+    device_window: int = 4
+    request_timeout_s: float = 5.0  # an in-flight request without response frees its slot after this time
+    max_queued_per_controller: int = 100  # further requests are dropped (counter "request_queue_full")
     llrp: bool = False  # respond as LLRP target (E1.33 5.2: mandatory for brokers in production)
     llrp_network: LlrpNetwork | None = None  # default: multicast on the adapter of ``host``
 
 
-@dataclass
+class _RequestQueue:
+    """Requests of controllers waiting for one RPT client, and those in flight (E1.33 9.2.10)."""
+
+    def __init__(self):
+        self.pending: dict[int, collections.deque] = {}  # id(controller) -> deque of (controller, header, packet)
+        self.order: collections.deque[int] = collections.deque()  # round robin over controllers with requests
+        # (id(controller), seq) -> (timeout, controller, header) of requests sent and not yet answered
+        self.inflight: dict[tuple[int, int], tuple[asyncio.TimerHandle, object, P.RptHeader]] = {}
+
+    def queued(self) -> int:
+        return sum(len(items) for items in self.pending.values())
+
+
+@dataclass(eq=False)
 class _Client:
     connection: TcpConnection
     entry: P.ClientEntry
     incremental: bool
     connected_since: str
+    queue: _RequestQueue = field(default_factory=_RequestQueue)
 
     @property
     def uid(self) -> Uid:
@@ -106,6 +129,7 @@ class RdmnetBroker:
         self._dyn_next: dict[int, int] = collections.defaultdict(lambda: 1)
         self._heartbeat_task: asyncio.Task | None = None
         self._connection_tasks: set[asyncio.Task] = set()
+        self._pump_tasks: set[asyncio.Task] = set()
         self.events: collections.deque = collections.deque(maxlen=1000)
         self.counters = collections.Counter()
         self.port: int | None = None
@@ -166,7 +190,10 @@ class RdmnetBroker:
             except Exception:
                 pass
             await c.connection.close()
-        for t in list(self._connection_tasks):
+        for c in self._clients.values():  # fair queuing: no timeouts or pumps after the stop
+            for handle, _controller, _header in c.queue.inflight.values():
+                handle.cancel()
+        for t in list(self._connection_tasks) + list(self._pump_tasks):
             t.cancel()
         if self._connection_tasks:
             await asyncio.gather(*self._connection_tasks, return_exceptions=True)
@@ -192,6 +219,8 @@ class RdmnetBroker:
                  "peer": c.connection.peer, "connected_since": c.connected_since}
                 for c in self._all_clients()
             ],
+            "queued_requests": {str(c.uid): {"waiting": c.queue.queued(), "in_flight": len(c.queue.inflight)}
+                                for c in self._clients.values() if c.queue.queued() or c.queue.inflight},
             "counters": dict(self.counters),
         }
 
@@ -365,6 +394,8 @@ class RdmnetBroker:
             del table[key]
             self._event("client_disconnected", uid=str(client.uid), cid=str(client.entry.cid),
                         type=client.entry.type_text)
+            if not client.is_ept:
+                await self._drop_queues(client)
             await self._send_to_incremental(C.VECTOR_BROKER_CLIENT_REMOVE, client.entry.encode(), client.entry.protocol)
 
     async def _send_to_incremental(self, vector: int, data: bytes, protocol: int,
@@ -496,8 +527,7 @@ class RdmnetBroker:
                 self.counters["rpt_unknown_uid"] += 1
                 await self._status_to(client, k, C.RPT_STATUS_UNKNOWN_RPT_UID)
                 return
-            if await self._safe_send(dest, dest.connection.send_raw(packet)):
-                self.counters["rpt_request_forwarded"] += 1
+            await self._forward_request(client, dest, k, packet)
 
         elif k.vector in (C.VECTOR_RPT_NOTIFICATION, C.VECTOR_RPT_STATUS):
             if k.dest == ALL_CONTROLLERS:
@@ -509,7 +539,10 @@ class RdmnetBroker:
                 if dest is None:
                     self.counters["rpt_response_without_dest"] += 1
                     return
+                completed = self._complete_request(client, dest, k.sequence)
                 await self._safe_send(dest, dest.connection.send_raw(packet))
+                if completed:
+                    await self._pump(client)  # a slot of this client is free again
             self.counters["rpt_response_forwarded"] += 1
         else:
             self.counters["rpt_unknown_vector"] += 1
@@ -577,6 +610,87 @@ class RdmnetBroker:
                           k.source_endpoint, k.sequence)
         await self._safe_send(client, client.connection.send_rpt(
             rheader, P.build_notification([raw, response.encode()])))
+
+    # ----------------------------------------------------------------- Fair queuing (9.2.10)
+    async def _forward_request(self, controller: _Client, dest: _Client, k: P.RptHeader, packet: bytes) -> None:
+        if self.config.device_window <= 0:
+            if await self._safe_send(dest, dest.connection.send_raw(packet)):
+                self.counters["rpt_request_forwarded"] += 1
+            return
+        q, key = dest.queue, id(controller)
+        items = q.pending.get(key)
+        if items is None:
+            items = q.pending[key] = collections.deque()
+            q.order.append(key)
+        if len(items) >= self.config.max_queued_per_controller:
+            self.counters["request_queue_full"] += 1
+            self._event("request_dropped", reason="queue full", controller=controller.name, dest=dest.name)
+            return
+        items.append((controller, k, packet))
+        await self._pump(dest)
+
+    async def _pump(self, dest: _Client) -> None:
+        """Sends waiting requests to ``dest`` while it has free slots, one controller after the other."""
+        q = dest.queue
+        loop = asyncio.get_running_loop()
+        while len(q.inflight) < self.config.device_window and q.order:
+            key = q.order.popleft()
+            items = q.pending[key]
+            controller, header, packet = items.popleft()
+            if items:
+                q.order.append(key)  # round robin: back to the end of the line
+            else:
+                del q.pending[key]
+            slot = (key, header.sequence)
+            old = q.inflight.pop(slot, None)
+            if old:
+                old[0].cancel()
+            q.inflight[slot] = (loop.call_later(self.config.request_timeout_s, self._request_expired, dest, slot),
+                                controller, header)
+            if await self._safe_send(dest, dest.connection.send_raw(packet)):
+                self.counters["rpt_request_forwarded"] += 1
+
+    def _complete_request(self, device: _Client, controller: _Client, seq: int) -> bool:
+        entry = device.queue.inflight.pop((id(controller), seq), None)
+        if entry is None:
+            return False  # unsolicited, or the slot already expired
+        entry[0].cancel()
+        return True
+
+    def _request_expired(self, dest: _Client, slot: tuple[int, int]) -> None:
+        if dest.queue.inflight.pop(slot, None) is not None:
+            self.counters["request_timeout"] += 1
+            self._spawn_pump(dest)
+
+    def _spawn_pump(self, dest: _Client) -> None:
+        task = asyncio.get_running_loop().create_task(self._pump(dest))
+        self._pump_tasks.add(task)
+        task.add_done_callback(self._pump_tasks.discard)
+
+    async def _drop_queues(self, client: _Client) -> None:
+        """A client is gone: answer requests still waiting for it, forget requests it sent."""
+        q = client.queue
+        sent = []
+        for handle, controller, header in q.inflight.values():
+            handle.cancel()
+            sent.append((controller, header))
+        q.inflight.clear()
+        waiting = [(controller, header) for items in q.pending.values() for controller, header, _packet in items]
+        q.pending.clear()
+        q.order.clear()
+        for controller, header in sent + waiting:  # the device left: Unknown RPT UID, no answer will come
+            if not self._stopping and self._clients.get(controller.uid) is controller:
+                await self._status_to(controller, header, C.RPT_STATUS_UNKNOWN_RPT_UID)
+        key = id(client)
+        for other in list(self._clients.values()):
+            oq = other.queue
+            if oq.pending.pop(key, None) is not None:
+                oq.order = collections.deque(k for k in oq.order if k != key)
+            freed = [slot for slot in oq.inflight if slot[0] == key]
+            for slot in freed:
+                oq.inflight.pop(slot)[0].cancel()
+            if freed:
+                await self._pump(other)
 
     async def _status_to(self, client: _Client, k: P.RptHeader, code: int) -> None:
         response = P.RptHeader(C.VECTOR_RPT_STATUS, k.dest, k.dest_endpoint, k.source, k.source_endpoint, k.sequence)
