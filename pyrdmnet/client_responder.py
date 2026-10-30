@@ -60,13 +60,14 @@ class ClientResponder:
 
     def __init__(self, client: RptClient, manufacturer_label: str = "pyrdmnet", model: str = "pyrdmnet Controller",
                  device_label: str | None = None, product_category: int = PRODUCT_CATEGORY_CONTROL_CONTROLLER,
-                 model_id: int = 0x0002):
+                 model_id: int = 0x0002, disconnect_reason: int = C.E133_DISCONNECT_RPT_RECONFIGURE):
         self.client = client
         self.manufacturer_label = manufacturer_label
         self.model = model
         self.device_label = device_label if device_label is not None else model
         self.product_category = product_category
         self.model_id = model_id
+        self.disconnect_reason = disconnect_reason  # LLRP: E133_DISCONNECT_LLRP_RECONFIGURE
         self.identifying = False
 
     # ----------------------------------------------------------------- complete default responder
@@ -162,6 +163,6 @@ class ClientResponder:
                 return nack(C.NR_INVALID_IPV4_ADDRESS)
             if new.static_type == C.E133_STATIC_CONFIG_IPV6 and new.static_ipv6 == bytes(16):
                 return nack(C.NR_INVALID_IPV6_ADDRESS)
-            c.set_component_scope(new)
+            c.set_component_scope(new, self.disconnect_reason)
             return a.response(C.RESPONSE_ACK)
         return nack(C.NR_UNKNOWN_PID)

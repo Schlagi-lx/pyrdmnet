@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- The simulator can be an LLRP target (`SimulatedGateway.start_llrp()`, CLI `simulator --llrp` with `--adapter` /
+  `--interface6`): same CID and default responder as the RPT component, connected devices only answer probes
+  without the "inactive" filter. Scope, static broker and search domain can be changed via LLRP; a scope change
+  disconnects with `DISCONNECT_LLRP_RECONFIGURE`.
+- `connect(..., keep_trying=True)`: a failed first connect does not raise; the client keeps trying with the
+  reconnection back-off (a device with the wrong scope waiting to be fixed via LLRP). A scope change while waiting
+  ends the back-off pause at once.
+- The broker logs the reason of a client's Disconnect (`client_disconnect` event, `C.DISCONNECT_TEXT`).
 - Fair queuing in the broker (E1.33 9.2.10): per RPT client at most `BrokerConfig.device_window` (4) requests are in
   flight; further requests wait in one queue per controller and are sent round-robin, so each of N busy controllers
   gets at least 1/N of a device's bandwidth and an idle controller's share goes to the others. A request without an

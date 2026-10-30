@@ -5,6 +5,10 @@ Two operating modes:
   one physical port (endpoint 1) to which a simulated RDM fixture is connected.
 * Native: the fixture itself is the RDMnet device (endpoint 0).
 
+Optionally the device is also an LLRP target (:meth:`SimulatedGateway.start_llrp`, CLI
+``simulator --llrp``): it can then be found and reconfigured via LLRP (scope, static broker,
+search domain) even while it cannot reach a broker - e.g. started with the wrong scope.
+
 All values are SIMULATION. Manufacturer/model are deliberately generic and
 do not represent a real device.
 """
@@ -22,6 +26,7 @@ from . import pdu as P
 from . import rdm_params as R
 from .client import RptClient
 from .client_responder import E133_CLIENT_PIDS, ClientResponder
+from .llrp import LlrpNetwork, LlrpTarget
 from .rdm import RdmFormatError, RdmMessage, Uid, is_device_broadcast
 
 
@@ -223,12 +228,43 @@ class SimulatedGateway(RptClient):
                                                      0, 0x00, 0x01, 0x00, -20, 90, 0, 60, 0x00, "Gateway"), 31.0)])
 
         self.client_responder = ClientResponder(self, model="SIM Gateway 1 Port")
+        # changes via LLRP disconnect with LLRP_RECONFIGURE (E1.33 table A-24)
+        self.llrp_responder = ClientResponder(self, model="SIM Gateway 1 Port",
+                                              disconnect_reason=C.E133_DISCONNECT_LLRP_RECONFIGURE)
+        self.llrp_target: LlrpTarget | None = None
 
-    def _default_responder(self, fixture: SimFixture, a: RdmMessage) -> RdmMessage | None:
+    # ----------------------------------------------------------------- LLRP target (E1.33 5.5, 5.7)
+    async def start_llrp(self, network: LlrpNetwork | None = None) -> LlrpTarget:
+        """Answer LLRP probes and RDM via LLRP with the default responder (same CID as the RPT component)."""
+        if self.llrp_target is None:
+            self.llrp_target = LlrpTarget(lambda: self.uid or self.requested_uid, self.cid, C.LLRP_TYPE_DEVICE,
+                                          self._llrp_respond, network, connected=lambda: self.connected)
+            try:
+                await self.llrp_target.start()
+            except OSError:
+                self.llrp_target = None
+                raise
+        return self.llrp_target
+
+    async def stop_llrp(self) -> None:
+        if self.llrp_target is not None:
+            await self.llrp_target.stop()
+            self.llrp_target = None
+
+    def _llrp_respond(self, a: RdmMessage) -> RdmMessage | None:
+        return self._default_responder(self.fixture if self.native else self.gateway_responder, a,
+                                       self.llrp_responder)
+
+    async def disconnect(self) -> None:
+        await super().disconnect()
+        await self.stop_llrp()
+
+    def _default_responder(self, fixture: SimFixture, a: RdmMessage,
+                           client_responder: ClientResponder | None = None) -> RdmMessage | None:
         """Default responder (E1.33 7.2.1): the fixture plus the E1.33 management PIDs, PARAMETER_DESCRIPTION
         and a SUPPORTED_PARAMETERS list that includes the required PIDs."""
         if a.pid in E133_CLIENT_PIDS and not a.dest.is_broadcast:
-            return self.client_responder.respond_e133(a)
+            return (client_responder or self.client_responder).respond_e133(a)
         if a.command_class == C.CC_GET and not a.dest.is_broadcast:
             if a.pid == C.PID_PARAMETER_DESCRIPTION:  # no manufacturer-specific PIDs
                 return a.response(C.RESPONSE_NACK, struct.pack(">H", C.NR_DATA_OUT_OF_RANGE))

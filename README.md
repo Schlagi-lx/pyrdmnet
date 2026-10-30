@@ -15,7 +15,7 @@ through a synchronous interface.
 
 | | |
 |---|---|
-| Software tests | 222/222 passing on Linux, macOS and Windows (Python 3.10–3.13, standard library only) |
+| Software tests | 228/228 passing on Linux, macOS and Windows (Python 3.10–3.13, standard library only) |
 | Real-world test | with an **LSS MasterPort 2** (firmware 2.13) as RDMnet gateway and an **ETC ColorSource PAR**: broker discovery via mDNS, connection, finding devices, reading, setting mode/start address and reading back (tested with 0.4) |
 | Other gateways/devices | not tested – feedback welcome |
 
@@ -55,7 +55,8 @@ No E1.33 conformance testing, no certification. Use at your own risk (see licens
 - **RDM over Art-Net** (ArtTod, ArtRdm)
 - **LLRP** (E1.33 section 5): find RDMnet components without a broker, read and – after confirmation – set scope,
   static broker address and search domain. The broker can respond as an LLRP target itself (`--llrp`). IPv4 and IPv6.
-- **Simulator** for tests without hardware
+- **Simulator** for tests without hardware; with `--llrp` also an LLRP target, e.g. started with a wrong scope and then
+  fixed with the `llrp` command
 
 ## Write safety
 
@@ -117,6 +118,16 @@ python3 -m pyrdmnet llrp --adapter 192.168.1.10                       # search, 
 python3 -m pyrdmnet llrp --adapter 192.168.1.10 --uid 7ff0:00000100 \
         --scope default --broker 192.168.1.10:8888                    # set scope + static broker
 python3 -m pyrdmnet llrp --adapter 192.168.1.10 --interface6 eth0     # IPv6 on a named interface
+```
+
+Try it without hardware: a simulator with the wrong scope keeps trying to connect and answers LLRP; fixing its scope
+connects it at once.
+
+```bash
+python3 -m pyrdmnet broker --port 8888
+python3 -m pyrdmnet simulator --broker 127.0.0.1:8888 --scope wrong --llrp
+python3 -m pyrdmnet llrp                                                # finds the simulator, scope "wrong"
+python3 -m pyrdmnet llrp --uid 7ff0:00000100 --scope default --yes      # it connects to the broker
 ```
 
 LLRP runs over IPv4 and IPv6 at the same time. `--interface6` selects the IPv6 interface (name such as `eth0`/`en0`,
