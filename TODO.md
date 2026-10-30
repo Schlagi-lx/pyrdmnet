@@ -5,7 +5,9 @@
 - [x] 1. Broker als RDM-Responder: Anfragen an die eigene Broker-UID beantworten
       (`COMPONENT_SCOPE`, `SEARCH_DOMAIN`, `BROKER_STATUS`, Basis-PIDs nach E1.20)
 - [x] 2. `CLIENT_ENTRY_UPDATE` verarbeiten (bisher nur gezählt und ignoriert)
-- [ ] 3. LLRP: Gateways ohne Broker finden, Scope/Broker-Adresse setzen
+- [x] 3. LLRP: Gateways ohne Broker finden, Scope/Broker-Adresse setzen
+      - [ ] 3a. LLRP über IPv6 (E1.33 verlangt vom Manager IPv4 und IPv6)
+      - [ ] 3b. Simulator-Gateway als LLRP-Target; Realtest mit MasterPort
 - [ ] 4. PDU-Vererbung (Flags) in `pdu.py` unterstützen
 - [ ] 5. EPT-Clients sauber durchreichen oder ablehnen
 - [ ] 6. Mehrere Broker im selben Scope per mDNS erkennen und warnen
@@ -18,6 +20,6 @@
 
 ## Tests / Projektpflege
 
-- [ ] 10. Testlaufzeit senken (derzeit ca. 90 s): feste Wartezeiten durch Ereignisse ersetzen
+- [ ] 10. Testlaufzeit senken (derzeit ca. 100 s): feste Wartezeiten durch Ereignisse ersetzen
 - [x] 11. README: Platzhalter `<konto>` im Clone-Befehl ersetzen
 - [ ] 12. Release 0.5 mit Changelog, ggf. PyPI

@@ -53,10 +53,8 @@ def _version_als_zahl(text: str) -> int:
 
 
 def baue_component_scope(slot: int, scope: str) -> bytes:
-    """COMPONENT_SCOPE-Antwort: Slot, Scope (63 Byte, nullterminiert), keine statische Konfiguration."""
-    roh = scope.encode("utf-8")[:K.E133_SCOPE_LAENGE - 1]
-    return (struct.pack(">H", slot) + roh.ljust(K.E133_SCOPE_LAENGE, b"\x00")
-            + bytes((K.E133_KEINE_STATISCHE_KONFIG,)) + bytes(4 + 16) + struct.pack(">H", 0))
+    """COMPONENT_SCOPE-Antwort des Brokers: immer ohne statische Konfiguration (E1.33 7.6.2)."""
+    return R.baue_component_scope(R.ComponentScope(slot, scope))
 
 
 @dataclass

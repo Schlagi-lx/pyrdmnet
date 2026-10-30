@@ -6,6 +6,7 @@ Befehle:
   auslesen   alle Geräte am Broker finden und auslesen (nur lesen)
   livetest   Live-Test mit realem Gateway (z. B. LSS MasterPort), nur lesend
   schreibtest  Modus/Startadresse am realen Scheinwerfer setzen, prüfen und zurückstellen
+  llrp       RDMnet-Komponenten ohne Broker finden (LLRP); Scope/Broker-Adresse setzen
   demo       kompletter Offline-Durchlauf: Broker + Simulator + Auslesen +
              Abgleich + Anwenden + 3 begleitete Messungen (alles SIMULATION)
 """
@@ -36,7 +37,7 @@ def _host_port(text: str) -> tuple[str, int]:
 
 
 async def _broker(args) -> None:
-    b = RdmnetBroker(BrokerKonfig(host=args.host, port=args.port, scope=args.scope,
+    b = RdmnetBroker(BrokerKonfig(host=args.host, port=args.port, scope=args.scope, llrp=args.llrp,
                                   ereignis_datei=Path(args.log) if args.log else None))
     await b.starten()
     dn = None
@@ -136,6 +137,67 @@ def _schreibtest(args) -> int:
     return 0 if erg.get("erfolgreich") else 1
 
 
+async def _llrp(args) -> int:
+    from .llrp import LlrpManager, LlrpNetz
+    from .rdm import Uid
+    netz = LlrpNetz(adapter=args.adapter, ttl=args.ttl)
+    if args.ttl > 1:
+        print("Hinweis: TTL > 1 – Antworten können aus anderen Netzsegmenten kommen.")
+    setzen = args.scope or args.domain
+    async with LlrpManager(netz) as m:
+        filt = 0 if args.alle else K.LLRP_FILTER_NUR_UNVERBUNDEN
+        print(f"LLRP-Suche über {args.adapter} ({'alle' if args.alle else 'nur ohne Broker-Verbindung'}) …")
+        ziele = await m.entdecken(filter=filt)
+        if args.uid:
+            gesucht = Uid.aus_text(args.uid)
+            ziele = [z for z in ziele if z.uid == gesucht]
+        ergebnisse = []
+        for z in ziele:
+            e = {"uid": str(z.uid), "cid": str(z.cid), "typ": z.typ_text, "hardware": z.hardware_text,
+                 "adresse": z.adresse}
+            try:
+                cs = await m.scope_lesen(z)
+                e.update(scope=cs.scope, statischer_broker=cs.statische_adresse)
+                e["suchdomain"] = await m.suchdomain_lesen(z)
+            except Exception as fehler:  # einzelne Targets dürfen die Liste nicht abbrechen
+                e["fehler"] = str(fehler)
+            ergebnisse.append(e)
+            print(f"  {e['uid']}  {e['typ']:<10} {e['adresse']:<15} HW {e['hardware']}  "
+                  f"Scope „{e.get('scope', '?')}“  Broker {e.get('statischer_broker') or 'per mDNS'}"
+                  f"  Domäne {e.get('suchdomain', '?')}" + (f"  FEHLER: {e['fehler']}" if "fehler" in e else ""))
+        if not ziele:
+            print("Keine LLRP-Targets gefunden." + ("" if args.alle else " (Mit --alle auch verbundene suchen.)"))
+        if args.json:
+            Path(args.json).write_text(json.dumps(ergebnisse, ensure_ascii=False, indent=2), encoding="utf-8")
+        if not setzen:
+            return 0
+        if not args.uid or len(ziele) != 1:
+            print("Zum Setzen genau ein Target mit --uid angeben.")
+            return 2
+        z = ziele[0]
+        broker = _host_port(args.broker) if args.broker else None
+        print(f"\nÄnderung an {z.uid} ({z.typ_text}, {z.adresse}):")
+        if args.scope:
+            print(f"  Scope → „{args.scope}“, Broker → {f'{broker[0]}:{broker[1]}' if broker else 'per mDNS'}")
+        if args.domain:
+            print(f"  Suchdomäne → {args.domain}")
+        print("  Ein verbundenes Gerät trennt sich dabei vom Broker.")
+        if not args.ja:
+            antwort = (await asyncio.to_thread(input, "Ausführen? [j/n] ")).strip().lower()
+            if antwort not in ("j", "ja", "y", "yes"):
+                print("Abgebrochen, nichts geändert.")
+                return 1
+        m.schreibfreigabe = True
+        if args.scope:
+            alt, neu = await m.scope_setzen(z, args.scope, broker)
+            print(f"  Scope: „{alt.scope}“ → „{neu.scope}“ (zurückgelesen), Broker: "
+                  f"{alt.statische_adresse or 'mDNS'} → {neu.statische_adresse or 'mDNS'}")
+        if args.domain:
+            alt_d, neu_d = await m.suchdomain_setzen(z, args.domain)
+            print(f"  Suchdomäne: {alt_d} → {neu_d} (zurückgelesen)")
+    return 0
+
+
 def _demo(args) -> int:
     db = Path(args.db)
     if db.exists() and not args.weiter:
@@ -205,6 +267,7 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--scope", default=K.E133_STANDARD_SCOPE)
     b.add_argument("--log", help="Ereignisse als JSONL in diese Datei")
     b.add_argument("--dnssd", action="store_true", help="per mDNS anmelden (macOS: Bonjour dns-sd)")
+    b.add_argument("--llrp", action="store_true", help="als LLRP-Target antworten (Multicast, UDP 5569)")
 
     s = sub.add_parser("simulator", help="simuliertes Gerät verbinden")
     s.add_argument("--broker", default="127.0.0.1:8888")
@@ -247,6 +310,17 @@ def main(argv: list[str] | None = None) -> int:
     st.add_argument("--zurueck-modus", type=int, help="Standard: gelesener Ausgangsmodus")
     st.add_argument("--zurueck-adresse", type=int, help="Standard: gelesene Ausgangsadresse")
 
+    ll = sub.add_parser("llrp", help="Komponenten per LLRP finden; optional Scope/Broker/Domäne setzen")
+    ll.add_argument("--adapter", default="0.0.0.0", help="IP des Netzwerkadapters")
+    ll.add_argument("--alle", action="store_true", help="auch Clients finden, die schon mit einem Broker verbunden sind")
+    ll.add_argument("--uid", help="nur dieses Target (Pflicht zum Setzen), z. B. 7ff0:00000100")
+    ll.add_argument("--scope", help="Scope setzen")
+    ll.add_argument("--broker", help="mit --scope: statische Broker-Adresse IP:Port (sonst Suche per mDNS)")
+    ll.add_argument("--domain", help="Suchdomäne setzen")
+    ll.add_argument("--ja", action="store_true", help="ohne Rückfrage setzen")
+    ll.add_argument("--ttl", type=int, default=1)
+    ll.add_argument("--json", help="Ergebnis als JSON speichern")
+
     d = sub.add_parser("demo", help="Offline-Demo")
     d.add_argument("--db", default="pyrdmnet_demo.sqlite")
     d.add_argument("--weiter", action="store_true", help="bestehende Demo-Datenbank weiterverwenden")
@@ -265,6 +339,8 @@ def main(argv: list[str] | None = None) -> int:
             return _schreibtest(args)
         elif args.befehl == "livetest":
             return _livetest(args)
+        elif args.befehl == "llrp":
+            return asyncio.run(_llrp(args))
         elif args.befehl == "demo":
             return _demo(args)
     except KeyboardInterrupt:

@@ -10,7 +10,7 @@ Entstanden im Projekt GelMatch (Vermessung von Scheinwerfern der Veranstaltungst
 
 | | |
 |---|---|
-| Softwaretests | 117/117 bestanden (Python 3.10–3.13, nur Standardbibliothek) |
+| Softwaretests | 130/130 bestanden (Python 3.10–3.13, nur Standardbibliothek) |
 | Realtest | mit **LSS MasterPort 2** (Firmware 2.13) als RDMnet-Gateway und einem **ETC ColorSource PAR**: Broker-Suche per mDNS, Verbindung, Geräte finden, auslesen, Modus/Startadresse setzen und zurücklesen |
 | Andere Gateways/Geräte | nicht getestet – Rückmeldungen willkommen |
 
@@ -27,6 +27,7 @@ Kein Konformitätstest nach E1.33, keine Zertifizierung. Nutzung auf eigene Vera
 - **Eingeschränktes RDM SET** (siehe unten)
 - **Sensor-Schnappschüsse** vor/nach einer Aktion, gespeichert in SQLite (Tabellen `rdm_*`)
 - **RDM über Art-Net** (ArtTod, ArtRdm)
+- **LLRP** (E1.33 Abschnitt 5): RDMnet-Komponenten ohne Broker finden, Scope, statische Broker-Adresse und Suchdomäne lesen und – mit Bestätigung – setzen. Der Broker kann selbst als LLRP-Target antworten (`--llrp`). Nur IPv4.
 - **Simulator** für Tests ohne Hardware
 
 ## Sicherheit beim Schreiben
@@ -60,6 +61,7 @@ Oder als Paket installieren: `pip install .` (optional mit mDNS über zeroconf: 
 | `auslesen` | alle Geräte am Broker finden und auslesen (nur lesen) |
 | `livetest` | Test mit realem Gateway, nur lesend |
 | `schreibtest` | Modus/Startadresse am realen Gerät setzen, prüfen und zurückstellen (mit Bestätigung vor Ort) |
+| `llrp` | Komponenten per LLRP finden (ohne Broker); mit `--uid` und `--scope`/`--broker`/`--domain` setzen |
 | `demo` | kompletter Offline-Durchlauf (Simulation) |
 
 Beispiel mit getrennten Prozessen:
@@ -68,6 +70,14 @@ Beispiel mit getrennten Prozessen:
 python3 -m pyrdmnet broker --host 127.0.0.1 --port 8888 --log ereignisse.jsonl
 python3 -m pyrdmnet simulator --broker 127.0.0.1:8888
 python3 -m pyrdmnet auslesen --broker 127.0.0.1:8888 --json geraete.json
+```
+
+Gateway mit falschem Scope oder ohne Broker-Suche? Per LLRP finden und umstellen:
+
+```bash
+python3 -m pyrdmnet llrp --adapter 192.168.1.10                       # suchen, Scope anzeigen
+python3 -m pyrdmnet llrp --adapter 192.168.1.10 --uid 7ff0:00000100 \
+        --scope default --broker 192.168.1.10:8888                    # Scope + statischen Broker setzen
 ```
 
 Im echten Netz `--host` auf die IP des Netzwerkadapters setzen und mit `--dnssd` per mDNS anmelden. Am Gateway die Broker-Suche auf mDNS stellen und denselben Scope eintragen (Standard: `default`, Groß-/Kleinschreibung beachten). Konkurrierende Broker im selben Scope vermeiden.
@@ -107,6 +117,7 @@ Ein Moduswechsel braucht eine bestätigte Zuordnung RDM-Personality ↔ Modus (j
 | `fassade.py` | synchrone Schnittstelle (asyncio im eigenen Thread) |
 | `dnssd.py` | mDNS-Anmeldung |
 | `artnet_rdm.py` | RDM über Art-Net |
+| `llrp.py` | LLRP-Manager und -Target |
 | `simulator.py`, `livetest.py`, `schreibtest.py`, `__main__.py` | Simulator, Werkzeuge, Kommandozeile |
 
 ## Hinweise
@@ -114,6 +125,7 @@ Ein Moduswechsel braucht eine bestätigte Zuordnung RDM-Personality ↔ Modus (j
 - Die Protokollkonstanten wurden mit den öffentlichen Referenzimplementierungen von ETC ([ETCLabs/RDMnet](https://github.com/ETCLabs/RDMnet), [ETCLabs/RDM](https://github.com/ETCLabs/RDM)) abgeglichen; Code daraus wurde nicht übernommen.
 - Der Broker meldet sich standardmäßig mit der ESTA-Prototyp-Herstellerkennung `0x7FF0` an (für Entwicklung vorgesehen). Wer das Modul in einem Produkt einsetzt, trägt in `RdmKonfig.broker_uid` seine eigene ESTA-Herstellerkennung ein.
 - Die Normen ANSI E1.20 und E1.33 gibt es bei ESTA (tsp.esta.org).
+- `COMPONENT_SCOPE`: E1.33-2019 nennt als Datenlänge 0x54, die Felder ergeben aber 88 Byte (0x58). pyrdmnet sendet und erwartet 88 Byte, wie die ETC-Referenzimplementierung.
 - „RDMnet“ bezeichnet den ESTA-Standard ANSI E1.33. Dieses Projekt steht in keiner Verbindung zu ESTA, ETC oder LSS.
 
 ## Lizenz

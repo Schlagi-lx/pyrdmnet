@@ -13,7 +13,9 @@ Umfang V0.1:
 * Heartbeat (Broker-NULL) und Verbindungsabbau bei Zeitüberschreitung
 * Ereignisprotokoll im Speicher und optional als JSONL-Datei
 
-Nicht enthalten: EPT-Clients, Redirect, LLRP. DNS-SD-Anmeldung über :mod:`pyrdmnet.dnssd`.
+* LLRP-Target (optional, ``BrokerKonfig.llrp``)
+
+Nicht enthalten: EPT-Clients, Redirect. DNS-SD-Anmeldung über :mod:`pyrdmnet.dnssd`.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from pathlib import Path
 from . import konstanten as K
 from . import pdu as P
 from .broker_responder import BrokerResponder, BrokerResponderDaten
+from .llrp import LlrpNetz, LlrpTarget
 from .rdm import ALLE_CONTROLLER, RdmFormatFehler, RdmNachricht, Uid, hersteller_aus_mid_broadcast, ist_geraete_broadcast
 from .verbindung import Verbindung
 
@@ -53,6 +56,8 @@ class BrokerKonfig:
     ereignis_datei: Path | None = None
     mitschnitt_datei: Path | None = None  # Rohdaten aller Pakete als JSONL (Diagnose Live-Test)
     mitschnitt_max_zeilen: int = 50000
+    llrp: bool = False  # als LLRP-Target antworten (E1.33 5.2: Pflicht für Broker im Realbetrieb)
+    llrp_netz: LlrpNetz | None = None  # Standard: Multicast auf dem Adapter von ``host``
 
 
 @dataclass
@@ -88,6 +93,7 @@ class RdmnetBroker:
         self.zaehler = collections.Counter()
         self.port: int | None = None
         self._mitschnitt_zeilen = 0
+        self.llrp_target: LlrpTarget | None = None
         k = self.konfig
         self.responder = BrokerResponder(
             BrokerResponderDaten(uid=k.uid, scope=k.scope, suchdomain=k.suchdomain, geraete_label=k.geraete_label),
@@ -98,12 +104,25 @@ class RdmnetBroker:
         self._server = await asyncio.start_server(self._neue_verbindung, self.konfig.host, self.konfig.port)
         self.port = self._server.sockets[0].getsockname()[1]
         self._heartbeat_task = asyncio.create_task(self._heartbeat_schleife())
+        if self.konfig.llrp:
+            netz = self.konfig.llrp_netz or LlrpNetz(
+                adapter=self.konfig.host if self.konfig.host not in ("", "0.0.0.0", "127.0.0.1") else "0.0.0.0")
+            self.llrp_target = LlrpTarget(self.konfig.uid, self.konfig.cid, K.LLRP_TYP_BROKER,
+                                          self.responder.beantworten, netz)
+            try:
+                await self.llrp_target.starten()
+            except OSError as fehler:  # LLRP ist eine Zusatzfunktion: Broker läuft trotzdem
+                self.llrp_target = None
+                self._ereignis("llrp_nicht_verfuegbar", fehler=str(fehler))
         self._ereignis("broker_gestartet", host=self.konfig.host, port=self.port, scope=self.konfig.scope,
                        uid=str(self.konfig.uid), cid=str(self.konfig.cid))
 
     async def stoppen(self) -> None:
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
+        if self.llrp_target:
+            await self.llrp_target.stoppen()
+            self.llrp_target = None
         for c in list(self._clients.values()):
             try:
                 await c.verbindung.sende_broker(K.VECTOR_BROKER_DISCONNECT, K.E133_DISCONNECT_SHUTDOWN.to_bytes(2, "big"))
