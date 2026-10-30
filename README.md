@@ -15,7 +15,7 @@ through a synchronous interface.
 
 | | |
 |---|---|
-| Software tests | 149/149 passing (Python 3.10–3.13, standard library only) |
+| Software tests | 172/172 passing on Linux, macOS and Windows (Python 3.10–3.13, standard library only) |
 | Real-world test | with an **LSS MasterPort 2** (firmware 2.13) as RDMnet gateway and an **ETC ColorSource PAR**: broker discovery via mDNS, connection, finding devices, reading, setting mode/start address and reading back (tested with 0.4) |
 | Other gateways/devices | not tested – feedback welcome |
 
@@ -31,7 +31,13 @@ No E1.33 conformance testing, no certification. Use at your own risk (see licens
   `BROKER_STATUS`, device info). Scope and state cannot be changed via RDM.
 - **mDNS registration** `_rdmnet._tcp` with scope subtype – via Bonjour (`dns-sd`, available on macOS), otherwise
   optionally via the `zeroconf` package
+- **One broker per scope** (E1.33 9.1.4): before announcing itself the broker looks for other brokers on its scope;
+  if there is one it stays in STANDBY (reported via `BROKER_STATUS`) until the other one is gone, and while running it
+  warns when another broker appears. `brokers` lists all brokers of a scope.
 - **Controller**: RDM GET, ACK_TIMER, ACK_OVERFLOW, NACK, status messages
+- **Automatic reconnection** (E1.33 6.2.5) for controllers, devices and EPT clients: after a broker restart or a
+  lost connection they reconnect by themselves with the back-off of the standard; Client Redirect (IPv4) is followed.
+  The facade waits for the reconnection instead of failing.
 - **Reading** via gateway endpoints or native RDMnet devices: manufacturer, model, firmware, DMX personalities with
   footprint, start address, sensors, device hours
 - **Settings check** of the device setting against an expected setting (mode, footprint, start address, universe)
@@ -75,6 +81,7 @@ Or install as a package: `pip install .` (optionally with mDNS via zeroconf: `pi
 | `livetest` | test with a real gateway, read only |
 | `writetest` | set mode/start address on a real device, verify and restore (with on-site confirmation) |
 | `llrp` | find components via LLRP (no broker needed); set with `--uid` and `--scope`/`--broker`/`--domain` |
+| `brokers` | list the brokers announced via mDNS for a scope; warns if there is more than one |
 | `demo` | complete offline run (simulation) |
 
 Example with separate processes:
@@ -96,6 +103,19 @@ python3 -m pyrdmnet llrp --adapter 192.168.1.10 --uid 7ff0:00000100 \
 On a real network, set `--host` to the IP of the network adapter and register via mDNS with `--dnssd`. On the
 gateway, set broker discovery to mDNS and enter the same scope (default: `default`, case-sensitive). Avoid competing
 brokers in the same scope.
+
+### Windows
+
+pyrdmnet runs on Windows with the standard Python from python.org (tested in CI with Python 3.10–3.13). Points to
+note:
+
+- **mDNS:** broker registration (`--dnssd`, default for `livetest`/`writetest`) needs either Apple's Bonjour
+  service (provides `dns-sd`, e.g. "Bonjour Print Services for Windows") or the `zeroconf` package:
+  `pip install ".[zeroconf]"`. Without either, use `--no-mdns` and enter the broker address in the gateway.
+- **Firewall:** on the first broker start, Windows Defender Firewall asks whether Python may accept connections.
+  Allow it for the network the gateway is on. If that network is classified as "Public", either change it to
+  "Private" or allow inbound TCP 8888 (broker), UDP 5569 (LLRP) and UDP 6454 (Art-Net) for Python.
+- **Adapter selection:** `livetest`/`writetest` without `--host` list the adapters from `ipconfig`.
 
 ## Embedding in your own programs
 

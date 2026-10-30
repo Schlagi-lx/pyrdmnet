@@ -22,6 +22,7 @@ import platform
 import re
 import socket
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,23 +37,71 @@ from .storage import RdmStore
 
 
 # ------------------------------------------------------------------- Network adapters
-def network_adapters(text: str | None = None) -> list[tuple[str, str]]:
-    """(name, IPv4) of all adapters that have an address, via ifconfig (macOS/Linux)."""
-    if text is None:
-        try:
-            text = subprocess.run(["ifconfig"], capture_output=True, text=True, timeout=5).stdout
-        except (OSError, subprocess.SubprocessError):
-            return []
-    adapter, name = [], None
+_IPV4 = r"(\d+\.\d+\.\d+\.\d+)"
+
+
+def _run_text(command: list[str]) -> str | None:
+    try:
+        p = subprocess.run(command, capture_output=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    # ipconfig writes in the console code page; only names may suffer, addresses are ASCII
+    return p.stdout.decode("utf-8", errors="replace") if p.returncode == 0 else None
+
+
+def parse_ifconfig(text: str) -> list[tuple[str, str]]:
+    """``ifconfig`` output (macOS, older Linux)."""
+    adapters, name = [], None
     for line in text.splitlines():
         m = re.match(r"^([A-Za-z0-9_.\-]+):? ", line)
         if m and not line.startswith((" ", "\t")):
             name = m.group(1).rstrip(":")
             continue
-        m = re.search(r"\binet (?:addr:)?(\d+\.\d+\.\d+\.\d+)", line)
+        m = re.search(r"\binet (?:addr:)?" + _IPV4, line)
         if m and name:
-            adapter.append((name, m.group(1)))
-    return adapter
+            adapters.append((name, m.group(1)))
+    return adapters
+
+
+def parse_ip_addr(text: str) -> list[tuple[str, str]]:
+    """``ip -4 -o addr show`` output (Linux without ifconfig)."""
+    adapters = []
+    for line in text.splitlines():
+        m = re.match(r"^\d+:\s+(\S+)\s+inet\s+" + _IPV4, line)
+        if m:
+            adapters.append((m.group(1), m.group(2)))
+    return adapters
+
+
+def parse_ipconfig(text: str) -> list[tuple[str, str]]:
+    """``ipconfig`` output (Windows, any display language: matches the "IPv4" line of each adapter)."""
+    adapters, name = [], None
+    for line in text.splitlines():
+        if line and not line[0].isspace() and line.rstrip().endswith(":"):
+            name = line.rstrip()[:-1].strip()
+            continue
+        m = re.search(r"IPv4[^:]*:\s*" + _IPV4, line)
+        if m and name:
+            adapters.append((name, m.group(1)))
+    return adapters
+
+
+def network_adapters(text: str | None = None) -> list[tuple[str, str]]:
+    """(name, IPv4) of all adapters that have an address.
+
+    Windows: ``ipconfig``; macOS/Linux: ``ifconfig``, falling back to ``ip -4 -o addr show``.
+    ``text`` (ifconfig format) is only used by tests.
+    """
+    if text is not None:
+        return parse_ifconfig(text)
+    if sys.platform == "win32":
+        out = _run_text(["ipconfig"])
+        return parse_ipconfig(out) if out else []
+    out = _run_text(["ifconfig"])
+    if out and (adapters := parse_ifconfig(out)):
+        return adapters
+    out = _run_text(["ip", "-4", "-o", "addr", "show"])
+    return parse_ip_addr(out) if out else []
 
 
 def ip_is_local(ip: str) -> bool:
@@ -74,6 +123,12 @@ class LiveConfig:
     wait_for_devices_s: float = 180.0
     find_responders_s: float = 60.0
     rdm_timeout_s: float = 5.0
+    # pauses of the lab flow (tests use short values)
+    settle_s: float = 3.0  # after the first device connects: time for further gateways
+    poll_s: float = 0.5  # interval while waiting for devices
+    search_retry_s: float = 5.0  # between searches for responders behind the gateway ports
+    mdns_self_test_s: float = 4.0
+    mdns_check_s: float = 3.0  # search for other brokers on the scope before registering (E1.33 9.1.4)
     dnssd: bool = True
     expected: A.ExpectedSetting | None = None
 
@@ -109,13 +164,16 @@ class LiveTest:
         except OSError as f:
             return self._abort(f"Broker cannot start on {self.k.host}:{self.k.port}: {f}")
         self.result["broker_uid"] = str(broker.config.uid)
-        reg = None
+        announcer = None
         try:
             self.p(f"\nBroker running: {self.k.host}:{broker.port}, scope \"{self.k.scope}\", UID {broker.config.uid}")
             if self.k.dnssd:
-                reg = await asyncio.to_thread(self._register_mdns, broker)
+                announcer = await self._announce(broker)
+            reg = announcer.registration if announcer else None
             self.result["mdns"] = {"active": reg is not None, "method": reg.method if reg else None,
-                                     "name": reg.name if reg else None}
+                                   "name": reg.name if reg else None,
+                                   "standby": bool(announcer and announcer.standby),
+                                   "other_brokers": [r.describe() for r in announcer.conflicts] if announcer else []}
             if reg:
                 self.p("In the MasterPort, enable RDMnet with automatic broker discovery (mDNS/DNS-SD), "
                        f"scope \"{self.k.scope}\".")
@@ -131,26 +189,33 @@ class LiveTest:
             await self._read_devices(broker)
             return self._finish(broker)
         finally:
-            if reg:
-                reg.stop()
+            if announcer:
+                await announcer.stop()
             await broker.stop()
 
-    def _register_mdns(self, broker: RdmnetBroker):
-        from .dnssd import DnssdRegistration
+    async def _announce(self, broker: RdmnetBroker):
+        """Check the scope for other brokers, then register via mDNS (E1.33 9.1.4)."""
+        from .dnssd import BrokerAnnouncer
+        announcer = BrokerAnnouncer(broker, self.k.host, check_s=self.k.mdns_check_s, on_message=self._hint)
         try:
-            reg = DnssdRegistration(self.k.scope, broker.config.cid, broker.config.uid, self.k.host, broker.port)
+            await announcer.start()
         except Exception as f:
             self._hint(f"mDNS registration failed: {f} - the broker must be entered statically in the MasterPort")
             return None
+        if announcer.standby:
+            self._hint("Another broker on this scope may take the MasterPort's connection instead of this one. "
+                       "Stop the other broker or use a different scope; until then enter this broker statically.")
+            return announcer
+        reg = announcer.registration
         self.p(f"mDNS: registered as \"{reg.name}\" ({reg.method}), type _rdmnet._tcp with subtype _{self.k.scope}")
-        found = reg.self_test()
+        found = await asyncio.to_thread(reg.self_test, self.k.mdns_self_test_s)
         if reg.method == "dns-sd":
             if found:
                 self.p("mDNS self-test: broker discoverable via the scope subtype - OK")
             else:
                 self._hint("mDNS self-test: own service not found via the scope subtype")
             self.result["mdns_self_test"] = found
-        return reg
+        return announcer
 
     async def _wait_for_devices(self, broker: RdmnetBroker) -> list[str]:
         end = time.monotonic() + self.k.wait_for_devices_s
@@ -174,9 +239,9 @@ class LiveTest:
             seen = len(events)
             devices = [c["uid"] for c in broker.status()["clients"] if c["type"] == "Device"]
             if devices:
-                await asyncio.sleep(3)  # give further gateways a moment to connect
+                await asyncio.sleep(self.k.settle_s)  # give further gateways a moment to connect
                 return [c["uid"] for c in broker.status()["clients"] if c["type"] == "Device"]
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(self.k.poll_s)
         return devices
 
     async def _read_devices(self, broker: RdmnetBroker) -> None:
@@ -216,8 +281,8 @@ class LiveTest:
                 self._hint(f"Search: {f}")
             if addresses or time.monotonic() >= end:
                 break
-            self.p("  no fixtures reported on the gateway ports yet - retrying in 5 s")
-            await asyncio.sleep(5)
+            self.p(f"  no fixtures reported on the gateway ports yet - retrying in {self.k.search_retry_s:g} s")
+            await asyncio.sleep(self.k.search_retry_s)
         if not addresses:
             self._error("No RDM responders found - the gateway reports no fixture on any port")
             for e in c.devices():
@@ -295,11 +360,16 @@ class LiveTest:
     def _diagnostic_hints(self, broker: RdmnetBroker) -> None:
         kinds = [e["event"] for e in broker.events]
         if "tcp_connection" not in kinds:
+            firewall = {"win32": "Windows Defender Firewall allows Python on this network (the network profile "
+                                 "must not be 'Public', or allow TCP port " + str(self.k.port) + " inbound)",
+                        "darwin": "macOS firewall allows incoming connections for Python"}.get(
+                sys.platform, "the firewall allows incoming TCP connections on port " + str(self.k.port))
             for t in ("No TCP connection received. Check: RDMnet enabled in the MasterPort, broker IP/port entered "
-                      "correctly, same network, macOS firewall allows incoming connections for Python.",
-                      "mDNS: the scope in the MasterPort must match exactly (case-sensitive); Mac and "
-                      "MasterPort in the same subnet; run \"dns-sd -B _rdmnet._tcp\" in a terminal to check whether "
-                      "the broker is visible. If necessary use --no-mdns and enter the address statically."):
+                      f"correctly, same network, {firewall}.",
+                      "mDNS: the scope in the MasterPort must match exactly (case-sensitive); this computer and "
+                      "the MasterPort in the same subnet; run \"dns-sd -B _rdmnet._tcp\" in a terminal to check whether "
+                      "the broker is visible (Windows: requires Bonjour, otherwise pip install zeroconf). If necessary "
+                      "use --no-mdns and enter the address statically."):
                 self._hint(t)
         elif "connect_rejected" in kinds:
             self._hint("Connection was rejected - see reason above (usually the scope). Scope in the MasterPort "

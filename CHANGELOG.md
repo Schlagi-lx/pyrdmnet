@@ -7,6 +7,26 @@
   EPT data. Blocks with PDU inheritance (e.g. one message to several CIDs, Appendix D.9) are split per destination
   and forwarded complete; unknown vectors and CIDs are answered with EPT status messages. Sender CIDs are checked.
 - New module `ept.py` with EPT encoding and `EptClient`.
+- Automatic reconnection (E1.33 6.2.5): `connect(..., auto_reconnect=True)` for all clients (controller, device,
+  EPT). First two attempts immediate, then a back-off growing by a random 1-5 s after an established but failed
+  connect (max. 30 s); refused TCP connects are retried every `reconnect_min_s`. Client Redirect IPv4 is followed
+  during connect and while connected. New: `wait_connected()`, `auto_reconnecting`, `reconnect_count`,
+  `on_connection_change`. The facade connects its controller with automatic reconnection and waits up to
+  `RdmConfig.reconnect_wait_s` (10 s) for it. Leftover tasks of a previous connection are cancelled.
+- Read-only facade calls (`find_devices`, `read_device`, `sensor_snapshot`) are repeated once after an automatic
+  reconnection if the connection dropped during the call; writing calls are never repeated automatically.
+- Fix: `RdmnetBroker.stop()` now stops accepting connections before disconnecting the clients, so reconnecting
+  clients no longer land on the stopping broker (showed up on Windows); late connections are closed at once.
+- One broker per scope (E1.33 9.1.4): `BrokerAnnouncer` looks for other brokers on the scope before registering via
+  mDNS, keeps the broker in STANDBY while there is one (re-checks every 15 s) and warns when another broker appears
+  later (check every 60 s). Used by `broker --dnssd`, `RdmConfig.dnssd` and the live test. `BROKER_STATUS` reports
+  ACTIVE/STANDBY; SET BROKER_STATUS is answered with NACK ACTION_NOT_SUPPORTED (7.6.4).
+- `find_brokers()` / `conflicting_brokers()` in `dnssd.py` (dns-sd or zeroconf) and the CLI command `brokers`.
+- Windows support: tests run on Windows in CI; adapter list via `ipconfig` (Windows) and `ip` (Linux without
+  `ifconfig`); `dns-sd` started via its resolved path; firewall hints per platform; README section for Windows.
+- Pauses of the lab flows are configurable, defaults unchanged: `LiveConfig.settle_s`, `poll_s`, `search_retry_s`,
+  `mdns_self_test_s`; `WriteConfig.readback_pause_s`; `ArtnetRdmController.flush_wait_s`. The test suite uses short
+  values and runs in about 30 s instead of about 100 s.
 - `ClientEntry` carries EPT sub-protocols (`ept_protocols`, `ClientEntry.ept()`); `type_text` is "EPT" for them.
 
 ## 0.5.0

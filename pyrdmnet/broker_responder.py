@@ -10,9 +10,11 @@ Supported (GET only, except IDENTIFY_DEVICE):
   IDENTIFY_DEVICE (GET/SET, no physical effect)
 * E1.33: COMPONENT_SCOPE, SEARCH_DOMAIN, BROKER_STATUS
 
-Scope, search domain and broker state deliberately cannot be changed via RDM
-(NACK UNSUPPORTED_COMMAND_CLASS, BROKER_STATUS reports "Set Allowed" = 0):
-a scope change would disconnect all clients and belongs in the configuration.
+Scope, search domain and broker state deliberately cannot be changed via RDM:
+SET COMPONENT_SCOPE / SEARCH_DOMAIN are answered with NACK UNSUPPORTED_COMMAND_CLASS,
+SET BROKER_STATUS with NACK ACTION_NOT_SUPPORTED as required by E1.33 7.6.4
+("Set Allowed" = 0). A scope change would disconnect all clients and belongs in the
+configuration. BROKER_STATUS reports ACTIVE or STANDBY (another broker on the scope, 9.1.4).
 """
 
 from __future__ import annotations
@@ -72,10 +74,12 @@ class BrokerResponderInfo:
 class BrokerResponder:
     """Answers RDM commands addressed to the broker UID."""
 
-    def __init__(self, data: BrokerResponderInfo, event: Callable[..., None] | None = None):
+    def __init__(self, data: BrokerResponderInfo, event: Callable[..., None] | None = None,
+                 state: Callable[[], int] | None = None):
         self.data = data
         self.identifying = False
         self._event = event or (lambda kind, **kw: None)
+        self._state = state or (lambda: C.E133_BROKER_ACTIVE)
 
     def respond(self, a: RdmMessage) -> RdmMessage | None:
         """Response to an RDM request; None for broadcast (E1.20: no response)."""
@@ -96,6 +100,8 @@ class BrokerResponder:
                 self.identifying = bool(a.data[0])
                 self._event("broker_identify", active=self.identifying, by=str(a.source))
                 return a.response(C.RESPONSE_ACK)
+            if a.pid == C.PID_BROKER_STATUS:  # 7.6.4: brokers without SET support answer ACTION_NOT_SUPPORTED
+                return nack(C.NR_ACTION_NOT_SUPPORTED)
             return nack(C.NR_UNSUPPORTED_COMMAND_CLASS if a.pid in SUPPORTED_PIDS else C.NR_UNKNOWN_PID)
         return nack(C.NR_UNSUPPORTED_COMMAND_CLASS)
 
@@ -130,5 +136,5 @@ class BrokerResponder:
         if pid == C.PID_SEARCH_DOMAIN:
             return dd.search_domain.encode("utf-8")[:C.E133_DOMAIN_LENGTH]
         if pid == C.PID_BROKER_STATUS:
-            return bytes((0, C.E133_BROKER_ACTIVE))  # Set Allowed = 0, state active
+            return bytes((0, self._state()))  # Set Allowed = 0, current state (active / standby)
         return C.NR_UNKNOWN_PID
