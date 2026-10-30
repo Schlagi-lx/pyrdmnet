@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- LLRP over IPv6 (E1.33 5.3): the manager listens on and sends to the IPv4 and IPv6 groups (`ff18::85:0:0:85` /
+  `ff18::85:0:0:86`); targets (also the broker with `--llrp`) listen on both and answer over the family a request
+  came in on. A request received over both families is handled only once, so an RDM SET is never executed twice.
+  A family the host does not offer is skipped with a warning. New `LlrpNetwork` fields `ipv4`, `ipv6`,
+  `interface6`, `hop_limit` (and `request_addr6`, `response_addr6`, `adapter6` for unicast); `LlrpManager.families`.
+  CLI `llrp`: `--interface6`, `--hop-limit`, `--ipv4-only`, `--ipv6-only`.
+- `set_scope(..., static_broker=...)` and `llrp --broker` also accept an IPv6 broker address (`[fd00::5]:8888`).
 - EPT support in the broker (E1.33 section 8, 9.3): EPT clients connect with CLIENT_PROTOCOL_EPT (zero UIDs in
   the Connect Reply), get their own client list with incremental updates and Client Entry Update, and exchange
   EPT data. Blocks with PDU inheritance (e.g. one message to several CIDs, Appendix D.9) are split per destination

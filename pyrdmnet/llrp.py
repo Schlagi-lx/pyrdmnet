@@ -10,7 +10,9 @@ their scope, search domain or a static broker address.
 * :class:`LlrpTarget` - answers probe requests and RDM commands; used by the
   broker (``BrokerConfig.llrp``) and in tests.
 
-Limitations: IPv4 only (E1.33 additionally requires IPv6 for managers).
+IPv4 and IPv6 (E1.33 5.3.2): managers send every request over both, targets
+answer over the family a request came in on and handle a request received over
+both only once. A family that is not available on the host is skipped.
 Network settings per E1.37-2 (IP address, DHCP ...) are deliberately not
 set. The target reports ``uuid.getnode()`` as its hardware address.
 """
@@ -18,11 +20,13 @@ set. The target reports ``uuid.getnode()`` as its hardware address.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import random
 import socket
 import struct
 import sys
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Callable
@@ -37,6 +41,7 @@ log = logging.getLogger("pyrdmnet.llrp")
 
 BROADCAST_CID = uuid.UUID(C.LLRP_BROADCAST_CID)
 UID_MIN, UID_MAX = 0, (1 << 48) - 1
+DUPLICATE_WINDOW_S = 2 * C.LLRP_TIMEOUT_S  # same request received over IPv4 and IPv6
 ALLOWED_SET_PIDS = {C.PID_COMPONENT_SCOPE, C.PID_SEARCH_DOMAIN, C.PID_IDENTIFY_DEVICE}
 
 
@@ -145,25 +150,66 @@ def hardware_address() -> bytes:
 # ------------------------------------------------------------------- Transport
 @dataclass
 class LlrpNetwork:
-    """Addresses for LLRP. Default: multicast per E1.33; tests use unicast on 127.0.0.1."""
+    """Addresses for LLRP. Default: multicast per E1.33 over IPv4 and IPv6; tests use unicast on loopback.
 
-    adapter: str = "0.0.0.0"  # IP of the network adapter (0.0.0.0 = system default)
+    E1.33 5.3.2: managers use both IPv4 and IPv6, targets one of them or both. If one family
+    cannot be opened (e.g. no IPv6 on the adapter), LLRP continues on the other one.
+    """
+
+    adapter: str = "0.0.0.0"  # IPv4 address of the network adapter (0.0.0.0 = system default)
     request_addr: str = C.LLRP_IPV4_REQUEST
     response_addr: str = C.LLRP_IPV4_RESPONSE
     request_port: int = C.LLRP_PORT
     response_port: int = C.LLRP_PORT
     multicast: bool = True
     ttl: int = 1  # >1: replies may come from other network segments (E1.33 5.3.3)
+    ipv4: bool = True
+    ipv6: bool | None = None  # None: with multicast yes, with unicast no (needs explicit addresses)
+    interface6: int | str = 0  # IPv6 interface: index or name (e.g. "eth0"); 0 = system default
+    request_addr6: str = C.LLRP_IPV6_REQUEST
+    response_addr6: str = C.LLRP_IPV6_RESPONSE
+    adapter6: str = "::"  # unicast only: local IPv6 address to bind to
+    hop_limit: int = 1  # IPv6 counterpart of ttl (E1.33 5.3.3)
+
+    @property
+    def use_ipv6(self) -> bool:
+        return self.multicast if self.ipv6 is None else self.ipv6
 
 
-def _udp_socket(network: LlrpNetwork, port: int, group: str) -> socket.socket:
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+def interface_index(interface: int | str) -> int:
+    """IPv6 interface index from an index or a name (``"eth0"``, Windows: also the index as text)."""
+    if isinstance(interface, int):
+        return interface
+    if interface.isdigit():
+        return int(interface)
+    try:
+        return socket.if_nametoindex(interface)
+    except OSError as error:
+        raise OSError(f"Unknown network interface {interface!r}") from error
+
+
+def _reuse(s: socket.socket) -> None:
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     if hasattr(socket, "SO_REUSEPORT"):
         try:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
         except OSError:
             pass
+
+
+def _only_joined_groups(s: socket.socket, level: int, name: str, linux_value: int) -> None:
+    """Linux delivers multicast of all joined groups on the port unless *_MULTICAST_ALL is off."""
+    option = getattr(socket, name, linux_value if sys.platform.startswith("linux") else None)
+    if option is not None:
+        try:
+            s.setsockopt(level, option, 0)
+        except OSError:
+            pass
+
+
+def _udp_socket(network: LlrpNetwork, port: int, group: str) -> socket.socket:
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    _reuse(s)
     try:
         if network.multicast:
             s.bind(("", port))
@@ -173,14 +219,35 @@ def _udp_socket(network: LlrpNetwork, port: int, group: str) -> socket.socket:
             s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
             if network.adapter != "0.0.0.0":
                 s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(network.adapter))
-            multicast_all = getattr(socket, "IP_MULTICAST_ALL", 49 if sys.platform.startswith("linux") else None)
-            if multicast_all is not None:
-                try:  # Linux: only receive groups this socket has joined
-                    s.setsockopt(socket.IPPROTO_IP, multicast_all, 0)
-                except OSError:
-                    pass
+            _only_joined_groups(s, socket.IPPROTO_IP, "IP_MULTICAST_ALL", 49)
         else:
             s.bind((network.adapter, port))
+    except OSError:
+        s.close()
+        raise
+    s.setblocking(False)
+    return s
+
+
+def _udp_socket6(network: LlrpNetwork, port: int, group: str) -> socket.socket:
+    if not socket.has_ipv6:
+        raise OSError("IPv6 is not supported by this Python")
+    s = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    try:
+        _reuse(s)
+        s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)  # IPv4 has its own socket
+        if network.multicast:
+            index = interface_index(network.interface6)
+            s.bind(("::", port))
+            join = getattr(socket, "IPV6_JOIN_GROUP", None) or socket.IPV6_ADD_MEMBERSHIP
+            s.setsockopt(socket.IPPROTO_IPV6, join, socket.inet_pton(socket.AF_INET6, group) + struct.pack("@I", index))
+            s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, network.hop_limit)
+            s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_LOOP, 1)
+            if index:
+                s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, index)
+            _only_joined_groups(s, socket.IPPROTO_IPV6, "IPV6_MULTICAST_ALL", 29)
+        else:
+            s.bind((network.adapter6, port))
     except OSError:
         s.close()
         raise
@@ -198,10 +265,60 @@ class _Protocol(asyncio.DatagramProtocol):
         except Exception:  # a malformed packet must not stop reception
             log.exception("Failed to process LLRP packet")
 
+    def error_received(self, error: Exception) -> None:  # e.g. no route for one address family
+        log.debug("LLRP send/receive error: %s", error)
 
-async def _endpoint(sock: socket.socket, on_receive) -> asyncio.DatagramTransport:
-    transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(lambda: _Protocol(on_receive), sock=sock)
-    return transport
+
+@dataclass(eq=False)
+class _Channel:
+    """One address family: socket plus the destinations for requests and responses."""
+
+    family: str  # "IPv4" / "IPv6"
+    transport: asyncio.DatagramTransport
+    request: tuple[str, int]
+    response: tuple[str, int]
+
+    def send(self, data: bytes, destination: tuple[str, int]) -> None:
+        self.transport.sendto(data, destination)
+
+
+async def _open_channels(network: LlrpNetwork, listen: str,
+                         on_receive: Callable[[bytes, tuple, _Channel], None]) -> list[_Channel]:
+    """Opens one channel per enabled address family. ``listen``: "request" (target) or "response" (manager).
+
+    A family that cannot be opened is skipped with a warning; if none can be opened, the first error is raised.
+    """
+    port = network.request_port if listen == "request" else network.response_port
+    families = []
+    if network.ipv4:
+        families.append(("IPv4", _udp_socket, network.request_addr, network.response_addr))
+    if network.use_ipv6:
+        families.append(("IPv6", _udp_socket6, network.request_addr6, network.response_addr6))
+    if not families:
+        raise ValueError("LLRP: neither IPv4 nor IPv6 enabled")
+    channels: list[_Channel] = []
+    errors: list[OSError] = []
+    loop = asyncio.get_running_loop()
+    for family, make, request, response in families:
+        try:
+            sock = make(network, port, request if listen == "request" else response)
+        except OSError as error:
+            errors.append(error)
+            log.warning("LLRP over %s not available: %s", family, error)
+            continue
+        channel = _Channel(family, None, (request, network.request_port), (response, network.response_port))
+        channel.transport, _ = await loop.create_datagram_endpoint(
+            lambda c=channel: _Protocol(lambda data, addr: on_receive(data, addr, c)), sock=sock)
+        channels.append(channel)
+    if not channels:
+        raise errors[0]
+    return channels
+
+
+def _close_channels(channels: list[_Channel]) -> None:
+    for c in channels:
+        c.transport.close()
+    channels.clear()
 
 
 # ------------------------------------------------------------------- Manager
@@ -244,18 +361,20 @@ class LlrpManager:
         self.protocol: list[dict] = []  # changes old -> new
         self._tn = 0
         self._rdm_tn = TransactionCounter()
-        self._transport: asyncio.DatagramTransport | None = None
+        self.channels: list[_Channel] = []
         self._probe: tuple[int, dict] | None = None  # (transaction, {(cid, uid): DiscoveredTarget})
         self._pending: dict[int, asyncio.Future] = {}
 
     async def start(self) -> None:
-        sock = _udp_socket(self.network, self.network.response_port, self.network.response_addr)
-        self._transport = await _endpoint(sock, self._on_datagram)
+        self.channels = await _open_channels(self.network, "response", self._on_datagram)
+
+    @property
+    def families(self) -> list[str]:
+        """Address families in use, e.g. ``["IPv4", "IPv6"]``."""
+        return [c.family for c in self.channels]
 
     async def stop(self) -> None:
-        if self._transport:
-            self._transport.close()
-            self._transport = None
+        _close_channels(self.channels)
 
     async def __aenter__(self) -> "LlrpManager":
         await self.start()
@@ -270,14 +389,15 @@ class LlrpManager:
         return self._tn
 
     def _send(self, vector: int, dest_cid: uuid.UUID, data: bytes) -> int:
-        if self._transport is None:
+        if not self.channels:
             raise RuntimeError("LLRP manager not started")
         tn = self._next_tn()
-        self._transport.sendto(build_llrp(self.cid, vector, dest_cid, tn, data),
-                               (self.network.request_addr, self.network.request_port))
+        packet = build_llrp(self.cid, vector, dest_cid, tn, data)
+        for c in self.channels:  # E1.33 5.3.2: requests go out over IPv4 and IPv6 (same transaction number)
+            c.send(packet, c.request)
         return tn
 
-    def _on_datagram(self, data: bytes, addr: tuple) -> None:
+    def _on_datagram(self, data: bytes, addr: tuple, _channel: _Channel | None = None) -> None:
         try:
             p = read_llrp(data)
         except P.ProtocolError:
@@ -381,7 +501,7 @@ class LlrpManager:
 
     async def set_scope(self, target: DiscoveredTarget, scope: str,
                            static_broker: tuple[str, int] | None = None) -> tuple[R.ComponentScope, R.ComponentScope]:
-        """Sets the scope (slot 1) and optionally a static IPv4 broker address; reads back.
+        """Sets the scope (slot 1) and optionally a static broker address (IPv4 or IPv6); reads back.
 
         Without ``static_broker`` the device locates the broker via mDNS. Note: a
         connected device disconnects from the broker when its scope changes.
@@ -392,8 +512,12 @@ class LlrpManager:
         old = await self.read_scope(target)
         new = R.ComponentScope(1, scope)
         if static_broker:
-            new.static_type = C.E133_STATIC_CONFIG_IPV4
-            new.static_ipv4, new.static_port = static_broker
+            host, new.static_port = static_broker
+            address = ipaddress.ip_address(host.strip("[]"))
+            if address.version == 6:
+                new.static_type, new.static_ipv6 = C.E133_STATIC_CONFIG_IPV6, address.packed
+            else:
+                new.static_type, new.static_ipv4 = C.E133_STATIC_CONFIG_IPV4, str(address)
         await self.rdm_set(target, C.PID_COMPONENT_SCOPE, R.build_component_scope(new))
         read_back = await self.read_scope(target)
         self._log_change(target, "COMPONENT_SCOPE", (old.scope, old.static_address),
@@ -432,43 +556,60 @@ class LlrpTarget:
         self.network = network or LlrpNetwork()
         self.connected = connected or (lambda: False)
         self.max_backoff_s = max_backoff_s
-        self.counters = {"probe": 0, "probe_reply": 0, "rdm": 0}
-        self._transport: asyncio.DatagramTransport | None = None
+        self.counters = {"probe": 0, "probe_reply": 0, "rdm": 0, "duplicate": 0}
+        self.channels: list[_Channel] = []
         self._tasks: set[asyncio.Task] = set()
+        self._seen: dict[tuple, float] = {}  # (manager CID, vector, transaction) -> time, see _duplicate
 
     @property
     def uid(self) -> Uid:
         return self._uid()
 
     async def start(self) -> None:
-        sock = _udp_socket(self.network, self.network.request_port, self.network.request_addr)
-        self._transport = await _endpoint(sock, self._on_datagram)
+        self.channels = await _open_channels(self.network, "request", self._on_datagram)
+
+    @property
+    def families(self) -> list[str]:
+        return [c.family for c in self.channels]
 
     async def stop(self) -> None:
         for t in list(self._tasks):
             t.cancel()
-        if self._transport:
-            self._transport.close()
-            self._transport = None
+        _close_channels(self.channels)
 
-    def _reply(self, dest_cid: uuid.UUID, vector: int, tn: int, data: bytes) -> None:
-        if self._transport:
-            self._transport.sendto(build_llrp(self.cid, vector, dest_cid, tn, data),
-                                   (self.network.response_addr, self.network.response_port))
+    def _reply(self, channel: _Channel, dest_cid: uuid.UUID, vector: int, tn: int, data: bytes) -> None:
+        if channel in self.channels:  # answer over the address family the request came in on
+            channel.send(build_llrp(self.cid, vector, dest_cid, tn, data), channel.response)
 
-    def _on_datagram(self, data: bytes, _addr: tuple) -> None:
+    def _duplicate(self, p: LlrpPacket) -> bool:
+        """A manager sends each request over IPv4 and IPv6; a dual-stack target handles it only once
+        (otherwise an RDM SET would be executed twice)."""
+        now = time.monotonic()
+        if len(self._seen) > 256:
+            self._seen = {k: t for k, t in self._seen.items() if now - t < DUPLICATE_WINDOW_S}
+        key = (p.sender_cid, p.vector, p.transaction)
+        seen = self._seen.get(key)
+        self._seen[key] = now
+        return seen is not None and now - seen < DUPLICATE_WINDOW_S
+
+    def _on_datagram(self, data: bytes, _addr: tuple, channel: _Channel) -> None:
         try:
             p = read_llrp(data)
         except P.ProtocolError:
             return
         if p.dest_cid not in (BROADCAST_CID, self.cid):  # E1.33 5.7.2
             return
+        if p.vector not in (C.VECTOR_LLRP_PROBE_REQUEST, C.VECTOR_LLRP_RDM_CMD):
+            return
+        if self._duplicate(p):
+            self.counters["duplicate"] += 1
+            return
         if p.vector == C.VECTOR_LLRP_PROBE_REQUEST:
-            self._probe(p)
-        elif p.vector == C.VECTOR_LLRP_RDM_CMD:
-            self._rdm(p)
+            self._probe(p, channel)
+        else:
+            self._rdm(p, channel)
 
-    def _probe(self, p: LlrpPacket) -> None:
+    def _probe(self, p: LlrpPacket, channel: _Channel) -> None:
         try:
             a = read_probe_request(p.data)
         except P.ProtocolError:
@@ -488,13 +629,13 @@ class LlrpTarget:
         async def delayed():  # E1.33 5.7.3: random backoff 0 ... LLRP_MAX_BACKOFF
             await asyncio.sleep(random.uniform(0, self.max_backoff_s))
             self.counters["probe_reply"] += 1
-            self._reply(p.sender_cid, C.VECTOR_LLRP_PROBE_REPLY, p.transaction, response)
+            self._reply(channel, p.sender_cid, C.VECTOR_LLRP_PROBE_REPLY, p.transaction, response)
 
         t = asyncio.ensure_future(delayed())
         self._tasks.add(t)
         t.add_done_callback(self._tasks.discard)
 
-    def _rdm(self, p: LlrpPacket) -> None:
+    def _rdm(self, p: LlrpPacket, channel: _Channel) -> None:
         try:
             request = RdmMessage.decode(read_rdm_cmd(p.data))
         except (P.ProtocolError, RdmFormatError):
@@ -512,7 +653,7 @@ class LlrpTarget:
             return
         if response.response_type in (C.RESPONSE_ACK_TIMER, C.RESPONSE_ACK_OVERFLOW):  # E1.33 5.7.2
             response = request.response(C.RESPONSE_NACK, struct.pack(">H", C.NR_ACTION_NOT_SUPPORTED))
-        self._reply(p.sender_cid, C.VECTOR_LLRP_RDM_CMD, p.transaction, P.build_rdm_cmd_pdu(response.encode()))
+        self._reply(channel, p.sender_cid, C.VECTOR_LLRP_RDM_CMD, p.transaction, P.build_rdm_cmd_pdu(response.encode()))
 
 
 # ------------------------------------------------------------------- simple component responder
