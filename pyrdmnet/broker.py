@@ -3,16 +3,19 @@
 Umfang V0.1:
 * Client Connect mit Prüfung von Scope, E1.33-Version, Client-Eintrag, UID
 * Statische und dynamische UIDs (Zuordnung je CID bleibt über Neuverbindungen gleich)
-* Connected Client List, Client Add/Remove an Clients mit Inkrementell-Flag
+* Connected Client List, Client Add/Remove/Entry Change an Clients mit Inkrementell-Flag
+* Client Entry Update (Eintrag ändern ohne Neuverbindung)
 * Request Dynamic UIDs / Fetch Dynamic UID List
 * RPT-Weiterleitung Controller → Gerät (auch Broadcast an alle Geräte bzw.
   alle Geräte eines Herstellers), Gerät → Controller (gezielt oder an alle)
 * Status UNKNOWN_RPT_UID und BROADCAST_COMPLETE vom Broker
+* Broker-eigener RDM-Responder (siehe :mod:`pyrdmnet.broker_responder`)
 * Heartbeat (Broker-NULL) und Verbindungsabbau bei Zeitüberschreitung
 * Ereignisprotokoll im Speicher und optional als JSONL-Datei
 
-Nicht enthalten (siehe ARCHITEKTUR.md): EPT-Clients, Broker-eigener
-RDM-Responder, Redirect, LLRP. DNS-SD-Anmeldung über :mod:`pyrdmnet.dnssd`.
+* LLRP-Target (optional, ``BrokerKonfig.llrp``)
+
+Nicht enthalten: EPT-Clients, Redirect. DNS-SD-Anmeldung über :mod:`pyrdmnet.dnssd`.
 """
 
 from __future__ import annotations
@@ -29,7 +32,9 @@ from pathlib import Path
 
 from . import konstanten as K
 from . import pdu as P
-from .rdm import ALLE_CONTROLLER, Uid, hersteller_aus_mid_broadcast, ist_geraete_broadcast
+from .broker_responder import BrokerResponder, BrokerResponderDaten
+from .llrp import LlrpNetz, LlrpTarget
+from .rdm import ALLE_CONTROLLER, RdmFormatFehler, RdmNachricht, Uid, hersteller_aus_mid_broadcast, ist_geraete_broadcast
 from .verbindung import Verbindung
 
 log = logging.getLogger("pyrdmnet.broker")
@@ -40,6 +45,8 @@ class BrokerKonfig:
     host: str = "127.0.0.1"
     port: int = 8888  # 0 = freien Port wählen
     scope: str = K.E133_STANDARD_SCOPE
+    suchdomain: str = K.E133_STANDARD_DOMAIN  # für RDM SEARCH_DOMAIN
+    geraete_label: str = "pyrdmnet Broker"  # für RDM DEVICE_LABEL
     uid: Uid = field(default_factory=lambda: Uid(K.ESTA_PROTOTYP_HERSTELLER, 0x00000001))
     cid: uuid.UUID = field(default_factory=uuid.uuid4)
     max_clients: int = 64
@@ -49,6 +56,8 @@ class BrokerKonfig:
     ereignis_datei: Path | None = None
     mitschnitt_datei: Path | None = None  # Rohdaten aller Pakete als JSONL (Diagnose Live-Test)
     mitschnitt_max_zeilen: int = 50000
+    llrp: bool = False  # als LLRP-Target antworten (E1.33 5.2: Pflicht für Broker im Realbetrieb)
+    llrp_netz: LlrpNetz | None = None  # Standard: Multicast auf dem Adapter von ``host``
 
 
 @dataclass
@@ -84,18 +93,36 @@ class RdmnetBroker:
         self.zaehler = collections.Counter()
         self.port: int | None = None
         self._mitschnitt_zeilen = 0
+        self.llrp_target: LlrpTarget | None = None
+        k = self.konfig
+        self.responder = BrokerResponder(
+            BrokerResponderDaten(uid=k.uid, scope=k.scope, suchdomain=k.suchdomain, geraete_label=k.geraete_label),
+            ereignis=self._ereignis)
 
     # ----------------------------------------------------------------- Lebenszyklus
     async def starten(self) -> None:
         self._server = await asyncio.start_server(self._neue_verbindung, self.konfig.host, self.konfig.port)
         self.port = self._server.sockets[0].getsockname()[1]
         self._heartbeat_task = asyncio.create_task(self._heartbeat_schleife())
+        if self.konfig.llrp:
+            netz = self.konfig.llrp_netz or LlrpNetz(
+                adapter=self.konfig.host if self.konfig.host not in ("", "0.0.0.0", "127.0.0.1") else "0.0.0.0")
+            self.llrp_target = LlrpTarget(self.konfig.uid, self.konfig.cid, K.LLRP_TYP_BROKER,
+                                          self.responder.beantworten, netz)
+            try:
+                await self.llrp_target.starten()
+            except OSError as fehler:  # LLRP ist eine Zusatzfunktion: Broker läuft trotzdem
+                self.llrp_target = None
+                self._ereignis("llrp_nicht_verfuegbar", fehler=str(fehler))
         self._ereignis("broker_gestartet", host=self.konfig.host, port=self.port, scope=self.konfig.scope,
                        uid=str(self.konfig.uid), cid=str(self.konfig.cid))
 
     async def stoppen(self) -> None:
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
+        if self.llrp_target:
+            await self.llrp_target.stoppen()
+            self.llrp_target = None
         for c in list(self._clients.values()):
             try:
                 await c.verbindung.sende_broker(K.VECTOR_BROKER_DISCONNECT, K.E133_DISCONNECT_SHUTDOWN.to_bytes(2, "big"))
@@ -225,12 +252,16 @@ class RdmnetBroker:
             return K.E133_CONNECT_INVALID_CLIENT_ENTRY, Uid(0, 0)
         if len(self._clients) >= self.konfig.max_clients:
             return K.E133_CONNECT_CAPACITY_EXCEEDED, Uid(0, 0)
-        uid = cd.client.uid
+        return self._uid_pruefen(cd.client.uid, cd.client.cid)
+
+    def _uid_pruefen(self, uid: Uid, cid: uuid.UUID, eigener: _Client | None = None) -> tuple[int, Uid]:
+        """UID-Prüfung nach E1.33 9.1.5; ``eigener`` = Client, der seinen Eintrag ändert."""
         if uid.ist_dynamisch_angefragt:
-            uid = self._dyn_uid_vergeben(uid.hersteller & 0x7FFF, cd.client.cid)
+            uid = self._dyn_uid_vergeben(uid.hersteller & 0x7FFF, cid)
         elif not uid.ist_gueltig_fuer_client or uid.ist_dynamisch:
             return K.E133_CONNECT_INVALID_UID, Uid(0, 0)
-        if uid in self._clients or uid == self.konfig.uid:
+        besitzer = self._clients.get(uid)
+        if (besitzer is not None and besitzer is not eigener) or uid == self.konfig.uid:
             return K.E133_CONNECT_DUPLICATE_UID, Uid(0, 0)
         return K.E133_CONNECT_OK, uid
 
@@ -297,11 +328,49 @@ class RdmnetBroker:
                          else (u, uuid.UUID(int=0), K.E133_DYN_UID_NICHT_GEFUNDEN)
                          for u in P.lese_uid_liste(bp.daten)]
             await v.sende_broker(K.VECTOR_BROKER_ASSIGNED_DYNAMIC_UIDS, P.baue_dyn_uid_zuordnungen(antworten))
+        elif bp.vektor == K.VECTOR_BROKER_CLIENT_ENTRY_UPDATE:
+            await self._client_eintrag_aendern(client, bp.daten)
         elif bp.vektor == K.VECTOR_BROKER_DISCONNECT:
             self._ereignis("client_disconnect", uid=str(client.uid))
             await v.schliessen()
         else:
             self.zaehler["broker_vektor_ignoriert"] += 1
+
+    async def _client_eintrag_aendern(self, client: _Client, daten: bytes) -> None:
+        """Client Entry Update (E1.33 6.3.1.4, 9.1.6): wie ein Connect prüfen, ohne Scope.
+
+        Protokoll (Vector) und CID (Header) müssen gleich bleiben; UID, Client-Typ und
+        Binding-CID (Data) dürfen sich ändern. Bei Fehler: Connect Reply mit Fehlercode,
+        Client entfernen, Verbindung schließen.
+        """
+        v, alt = client.verbindung, client.eintrag
+        try:
+            flags, neu = P.lese_client_entry_update(daten)
+        except P.ProtokollFehler:
+            neu = None
+        if (neu is None or neu.protokoll != alt.protokoll or neu.cid != alt.cid
+                or neu.typ not in (K.RPT_CLIENT_TYP_GERAET, K.RPT_CLIENT_TYP_CONTROLLER)):
+            code, uid = K.E133_CONNECT_INVALID_CLIENT_ENTRY, Uid(0, 0)
+        else:
+            code, uid = self._uid_pruefen(neu.uid, neu.cid, eigener=client)
+        if code != K.E133_CONNECT_OK:
+            self.zaehler["eintrag_update_abgelehnt"] += 1
+            self._ereignis("eintrag_update_abgelehnt", uid=str(alt.uid), grund=K.CONNECT_CODE_TEXT[code])
+            await self._sicher_senden(client, self._connect_antwort(v, code, uid))
+            await self._client_entfernen(client)
+            await v.schliessen()
+            return
+        eintrag = P.ClientEintrag(neu.cid, uid, neu.typ, neu.binding_cid)
+        if uid != alt.uid:
+            self._clients.pop(alt.uid, None)
+            self._clients[uid] = client
+        client.eintrag = eintrag
+        client.inkrementell = bool(flags & K.BROKER_CONNECT_FLAG_INKREMENTELL)
+        self.zaehler["eintrag_update_ok"] += 1
+        self._ereignis("eintrag_geaendert", uid_alt=str(alt.uid), uid=str(uid), typ=eintrag.typ_text,
+                       inkrementell=client.inkrementell)
+        await self._sicher_senden(client, self._connect_antwort(v, K.E133_CONNECT_OK, uid))
+        await self._an_inkrementelle(K.VECTOR_BROKER_CLIENT_ENTRY_CHANGE, eintrag.kodieren(), ausser=uid)
 
     async def _rpt_verarbeiten(self, client: _Client, rpt: P.RptPdu) -> None:
         k = rpt.kopf
@@ -322,6 +391,9 @@ class RdmnetBroker:
                         await self._sicher_senden(c, c.verbindung.senden_roh(paket))
                 self.zaehler["rpt_broadcast"] += 1
                 await self._status_an(client, k, K.RPT_STATUS_BROADCAST_COMPLETE)
+                return
+            if k.ziel == self.konfig.uid:
+                await self._an_broker_responder(client, rpt)
                 return
             ziel = self._clients.get(k.ziel)
             if ziel is None or ziel.ist_controller:
@@ -346,6 +418,33 @@ class RdmnetBroker:
         else:
             self.zaehler["rpt_unbekannter_vektor"] += 1
             await self._status_an(client, k, K.RPT_STATUS_UNKNOWN_VECTOR)
+
+    async def _an_broker_responder(self, client: _Client, rpt: P.RptPdu) -> None:
+        """RPT-Request an die Broker-UID: vom eigenen RDM-Responder beantworten (E1.33 6.2)."""
+        k = rpt.kopf
+        if k.ziel_endpoint != K.E133_NULL_ENDPOINT:
+            await self._status_an(client, k, K.RPT_STATUS_UNKNOWN_ENDPOINT)
+            return
+        try:
+            nachrichten = P.lese_request_oder_notification(rpt.daten, K.VECTOR_REQUEST_RDM_CMD)
+            if len(nachrichten) != 1:
+                raise P.ProtokollFehler("RPT-Request muss genau einen RDM-Befehl enthalten")
+            roh = nachrichten[0]
+            anfrage = RdmNachricht.dekodieren(roh)
+        except (P.ProtokollFehler, RdmFormatFehler, ValueError):
+            await self._status_an(client, k, K.RPT_STATUS_INVALID_MESSAGE)
+            return
+        if anfrage.ziel != self.konfig.uid and not anfrage.ziel.ist_broadcast:
+            await self._status_an(client, k, K.RPT_STATUS_UNKNOWN_RDM_UID)
+            return
+        antwort = self.responder.beantworten(anfrage)
+        self.zaehler["broker_rdm_anfrage"] += 1
+        if antwort is None:
+            return
+        rkopf = P.RptKopf(K.VECTOR_RPT_NOTIFICATION, self.konfig.uid, K.E133_NULL_ENDPOINT, k.quelle,
+                          k.quelle_endpoint, k.sequenz)
+        await self._sicher_senden(client, client.verbindung.sende_rpt(
+            rkopf, P.baue_notification([roh, antwort.kodieren()])))
 
     async def _status_an(self, client: _Client, k: P.RptKopf, code: int) -> None:
         antwort = P.RptKopf(K.VECTOR_RPT_STATUS, k.ziel, k.ziel_endpoint, k.quelle, k.quelle_endpoint, k.sequenz)

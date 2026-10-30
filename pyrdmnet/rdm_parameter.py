@@ -234,3 +234,53 @@ def baue_endpoint_responder(ep: int, aenderung: int, uids: list[Uid]) -> bytes:
 def lese_endpoint_universe(daten: bytes) -> tuple[int, int]:
     _laenge(daten, 4, "ENDPOINT_TO_UNIVERSE")
     return struct.unpack(">HH", daten)
+
+
+# ------------------------------------------------------------------- E1.33 COMPONENT_SCOPE / SEARCH_DOMAIN
+# Hinweis: E1.33-2019 nennt als PDL 0x54, die Felder ergeben aber 88 Byte (0x58);
+# die ETC-Referenzimplementierung sendet ebenfalls 88 Byte. Gesendet wird 88.
+COMPONENT_SCOPE_LAENGE = 2 + K.E133_SCOPE_LAENGE + 1 + 4 + 16 + 2
+
+
+@dataclass
+class ComponentScope:
+    slot: int
+    scope: str
+    statisch_typ: int = K.E133_KEINE_STATISCHE_KONFIG
+    statisch_ipv4: str = "0.0.0.0"
+    statisch_ipv6: bytes = bytes(16)
+    statisch_port: int = 0
+
+    @property
+    def statische_adresse(self) -> str | None:
+        if self.statisch_typ == K.E133_STATISCHE_KONFIG_IPV4:
+            return f"{self.statisch_ipv4}:{self.statisch_port}"
+        if self.statisch_typ == K.E133_STATISCHE_KONFIG_IPV6:
+            import ipaddress
+            return f"[{ipaddress.IPv6Address(self.statisch_ipv6)}]:{self.statisch_port}"
+        return None
+
+
+def baue_component_scope(cs: ComponentScope) -> bytes:
+    roh = cs.scope.encode("utf-8")[:K.E133_SCOPE_LAENGE - 1]
+    ipv4 = bytes(int(t) for t in cs.statisch_ipv4.split("."))
+    if len(ipv4) != 4 or len(cs.statisch_ipv6) != 16:
+        raise RdmFormatFehler("COMPONENT_SCOPE: statische Adresse ungültig")
+    return (struct.pack(">H", cs.slot) + roh.ljust(K.E133_SCOPE_LAENGE, b"\x00") + bytes((cs.statisch_typ,))
+            + ipv4 + cs.statisch_ipv6 + struct.pack(">H", cs.statisch_port))
+
+
+def lese_component_scope(daten: bytes) -> ComponentScope:
+    _laenge(daten, COMPONENT_SCOPE_LAENGE, "COMPONENT_SCOPE")
+    (slot,) = struct.unpack(">H", daten[:2])
+    scope = daten[2:2 + K.E133_SCOPE_LAENGE].split(b"\x00", 1)[0].decode("utf-8", errors="replace")
+    p = 2 + K.E133_SCOPE_LAENGE
+    ipv4 = ".".join(str(b) for b in daten[p + 1:p + 5])
+    (port,) = struct.unpack(">H", daten[p + 21:p + 23])
+    return ComponentScope(slot, scope, daten[p], ipv4, bytes(daten[p + 5:p + 21]), port)
+
+
+def lese_suchdomain(daten: bytes) -> str:
+    if len(daten) > K.E133_DOMAIN_LAENGE:
+        raise RdmFormatFehler(f"SEARCH_DOMAIN länger als {K.E133_DOMAIN_LAENGE} Byte")
+    return daten.split(b"\x00", 1)[0].decode("utf-8", errors="replace")
