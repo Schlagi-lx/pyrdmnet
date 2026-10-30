@@ -1,4 +1,4 @@
-"""mDNS-Anmeldung: Befehlszeile für Bonjour und Ablauf mit einem nachgebildeten dns-sd."""
+"""mDNS registration: command line for Bonjour and flow with a fake dns-sd."""
 
 import os
 import stat
@@ -13,10 +13,10 @@ from pyrdmnet.rdm import Uid
 
 CID = uuid.UUID("12345678-90ab-cdef-1234-567890abcdef")
 
-# Nachbildung von macOS dns-sd: -R meldet Erfolg und läuft weiter, -B listet den Dienst
+# Fake macOS dns-sd: -R reports success and keeps running, -B lists the service
 FAKE = r'''#!/bin/sh
 if [ "$1" = "-R" ]; then
-  echo "$@" > "$(dirname "$0")/aufruf.txt"
+  echo "$@" > "$(dirname "$0")/call.txt"
   echo "$2" > "$(dirname "$0")/name.txt"
   echo "Registering Service $2.$3 port $5"
   echo "Got a reply for service $2.$3local.: Name now registered and active"
@@ -66,7 +66,7 @@ class TestWithFakeDnsSd(unittest.TestCase):
     def test_register_self_test_stop(self):
         d = dnssd.DnssdRegistration("default", CID, Uid(0x7FF0, 1), "127.0.0.1", 8888)
         self.assertEqual(d.method, "dns-sd")
-        call = (Path(self.tmp.name) / "aufruf.txt").read_text()
+        call = (Path(self.tmp.name) / "call.txt").read_text()
         self.assertIn("_rdmnet._tcp,_default local. 8888", call)
         self.assertEqual(len(d.self_test(duration_s=1)), 1)
         d.stop()
@@ -80,7 +80,7 @@ class TestWithFakeDnsSd(unittest.TestCase):
         res = asyncio.run(LiveTest(k, output=reader.append).run())
         self.assertTrue(res["mdns"]["active"])
         self.assertTrue(res["mdns_self_test"])
-        self.assertTrue(any("automatisch (mDNS/DNS-SD)" in z for z in reader))
+        self.assertTrue(any("automatic broker discovery (mDNS/DNS-SD)" in z for z in reader))
 
 
 if __name__ == "__main__":

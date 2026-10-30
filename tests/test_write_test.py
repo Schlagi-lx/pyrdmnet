@@ -1,4 +1,4 @@
-"""Schreibtest-Ablauf offline gegen den Simulator (ersetzt nicht den Realtest)."""
+"""Write test flow offline against the simulator (does not replace the real test)."""
 
 import asyncio
 import json
@@ -19,7 +19,7 @@ from test_live_test import free_port
 
 
 def etc_par_sim() -> SimFixture:
-    """Simulator mit den Modi des realen ETC ColorSource PAR aus Live-Test 2."""
+    """Simulator with the modes of the real ETC ColorSource PAR from live test 2."""
     return SimFixture(uid=Uid(0x7FF0, 0x0201), personalities=[
         R.Personality(1, 5, "5 Channel"), R.Personality(2, 6, "Direct"),
         R.Personality(3, 1, "1 Channel"), R.Personality(4, 3, "RGB")], personality=2, start_address=1)
@@ -36,7 +36,7 @@ class TestWriteTest(unittest.IsolatedAsyncioTestCase):
     async def _run_test(self, wc: WriteConfig, responses=None, gateway=None):
         port = free_port()
         gateway = gateway or SimulatedGateway(fixture=etc_par_sim())
-        responses = list(responses if responses is not None else ["j"] * len(CHECKLIST))
+        responses = list(responses if responses is not None else ["y"] * len(CHECKLIST))
         k = LiveConfig(host="127.0.0.1", port=port, folder=Path(self.tmp.name), wait_for_devices_s=3,
                        find_responders_s=2, rdm_timeout_s=1, dnssd=False)
         st = WriteTest(k, wc, output=self.output.append, input_fn=lambda _: responses.pop(0) if responses else "n")
@@ -55,7 +55,7 @@ class TestWriteTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(res["success"], res["error"])
         self.assertEqual(fx.set_log, [(C.PID_DMX_PERSONALITY, b"\x04"), (C.PID_DMX_START_ADDRESS, b"\x00\x64"),
                                             (C.PID_DMX_PERSONALITY, b"\x02"), (C.PID_DMX_START_ADDRESS, b"\x00\x01")])
-        self.assertEqual((fx.personality, fx.start_address), (2, 1))  # Ausgangszustand
+        self.assertEqual((fx.personality, fx.start_address), (2, 1))  # initial state
         s1, s2 = res["write_test"]["steps"]
         self.assertEqual(s1["actual"], {"mode": 4, "address": 100, "footprint": 3})
         self.assertEqual(s2["actual"], {"mode": 2, "address": 1, "footprint": 6})
@@ -65,11 +65,11 @@ class TestWriteTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(changed, [("DMX_PERSONALITY", "2", "4", 1), ("DMX_START_ADDRESS", "1", "100", 1),
                                 ("DMX_PERSONALITY", "4", "2", 1), ("DMX_START_ADDRESS", "100", "1", 1)])
         report = (st.folder / "bericht.md").read_text()
-        self.assertIn("## Schreibtest", report)
+        self.assertIn("## Write test", report)
         self.assertEqual(len(res["gateways"]), 1)
-        self.assertEqual(report.count("## Schreibtest"), 1)
-        self.assertTrue(report.startswith("# Schreibtest"))
-        self.assertNotIn("nur lesend", report)
+        self.assertEqual(report.count("## Write test"), 1)
+        self.assertTrue(report.startswith("# Write test"))
+        self.assertNotIn("read-only", report)
         self.assertIn("SIM Gateway", report)
         self.assertTrue(json.loads((st.folder / "ergebnis.json").read_text())["success"])
 
@@ -77,13 +77,13 @@ class TestWriteTest(unittest.IsolatedAsyncioTestCase):
         st, res, fx = await self._run_test(WriteConfig(4, 100, return_mode=1, return_address=1))
         self.assertTrue(res["success"], res["error"])
         self.assertEqual((fx.personality, fx.start_address), (1, 1))
-        self.assertTrue(any("Rückweg weicht vom jetzigen Zustand ab" in z for z in self.output))
+        self.assertTrue(any("return step differs from the current state" in z for z in self.output))
 
     async def test_checklist_no_changes_nothing(self):
-        st, res, fx = await self._run_test(WriteConfig(4, 100), responses=["j", "n"])
+        st, res, fx = await self._run_test(WriteConfig(4, 100), responses=["y", "n"])
         self.assertFalse(res["success"])
         self.assertEqual(fx.set_log, [])
-        self.assertIn("Checkliste nicht vollständig bestätigt – nichts geändert", res["error"])
+        self.assertIn("Checklist not fully confirmed - nothing changed", res["error"])
 
     async def test_unknown_mode(self):
         st, res, fx = await self._run_test(WriteConfig(9, 100))
@@ -100,27 +100,27 @@ class TestWriteTest(unittest.IsolatedAsyncioTestCase):
         g.fixture.write_protect = True
         st, res, fx = await self._run_test(WriteConfig(4, 100), gateway=g)
         self.assertFalse(res["success"])
-        self.assertTrue(any("Schritt 1 hat nichts geändert" in f for f in res["error"]))
+        self.assertTrue(any("Step 1 changed nothing" in f for f in res["error"]))
 
     async def test_address_fails_return_runs(self):
         g = SimulatedGateway(fixture=etc_par_sim())
         fx = g.fixture
         orig = fx._set
 
-        def mode_only(a):  # Gerät nimmt Moduswechsel an, verweigert aber Adressen ≠ 1
+        def mode_only(a):  # device accepts the mode change but refuses addresses != 1
             if a.pid == C.PID_DMX_START_ADDRESS and a.data != b"\x00\x01":
                 return a.response(C.RESPONSE_NACK, b"\x00\x06")
             return orig(a)
         fx._set = mode_only
         st, res, fx = await self._run_test(WriteConfig(4, 100), gateway=g)
         self.assertFalse(res["success"])
-        self.assertEqual((fx.personality, fx.start_address), (2, 1))  # Rückweg hat gegriffen
+        self.assertEqual((fx.personality, fx.start_address), (2, 1))  # return step took effect
         self.assertFalse(res["write_test"]["steps"][0]["ok"])
         self.assertTrue(res["write_test"]["steps"][1]["ok"])
 
     async def test_slow_checklist_keeps_connection(self):
-        """Eingabe dauert länger als der Heartbeat-Takt – Broker läuft weiter (Eingabe im Thread)."""
-        responses = ["j"] * len(CHECKLIST)
+        """Input takes longer than the heartbeat interval - broker keeps running (input in a thread)."""
+        responses = ["y"] * len(CHECKLIST)
 
         def slow(_):
             time.sleep(0.3)

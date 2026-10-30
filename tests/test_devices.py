@@ -102,7 +102,7 @@ class TestReadGateway(NetworkTest):
         self.assertIsNone(p.lamp_hours)  # not in SUPPORTED_PARAMETERS -> not queried at all
         self.assertNotIn("LAMP_HOURS", p.unavailable)
         d = p.to_dict()
-        self.assertEqual(d["device_info"]["product_category_text"], "Scheinwerfer")
+        self.assertEqual(d["device_info"]["product_category_text"], "Fixture")
 
     async def test_profile_with_lamp_hours(self):
         self.fx.lamp_hours = 77
@@ -197,7 +197,7 @@ class TestSettingsCheck(NetworkTest):
         p = await self._profile()
         e = A.check(p, EXPECTED, self._mapping(p, fw=0x00020000))
         self.assertEqual(e.status, A.OK_UNCONFIRMED)
-        self.assertTrue(any("andere Firmware" in h for h in e.hints))
+        self.assertTrue(any("different firmware" in h for h in e.hints))
 
     async def test_candidates(self):
         p = await self._profile()
@@ -237,7 +237,7 @@ class TestSettingsCheck(NetworkTest):
         p = await self._profile()
         res = await A.apply(self.c, self.address, p, EXPECTED, self._mapping(p))
         self.assertFalse(res.success)
-        self.assertIn("Schreibfreigabe", res.error[0])
+        self.assertIn("write permission", res.error[0])
         self.assertEqual(self.fx.start_address, 7)
 
     async def test_apply_write_protect(self):

@@ -57,7 +57,8 @@ class TestFacade(unittest.TestCase):
         self.assertEqual([w["phase"] for w in values], ["before"] * 3 + ["after"] * 3)
 
         db = sqlite3.connect(self.db)
-        self.assertEqual(db.execute("SELECT COUNT(*) FROM rdm_device").fetchone()[0], 3)  # initial readout + one after each of the two apply attempts
+        # initial readout + one after each of the two apply attempts
+        self.assertEqual(db.execute("SELECT COUNT(*) FROM rdm_device").fetchone()[0], 3)
         self.assertEqual(db.execute("SELECT COUNT(*) FROM rdm_sensor_definition").fetchone()[0], 12)
         changed = db.execute("SELECT parameter, old, new, success FROM rdm_change ORDER BY id").fetchall()
         self.assertEqual(changed, [("NONE", None, changed[0][2], 0), ("DMX_PERSONALITY", "1", "2", 1),

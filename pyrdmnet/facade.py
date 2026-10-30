@@ -188,7 +188,8 @@ class RdmModule:
         profile = self._run(f())
         if self.config.transport == "ARTNET" and profile.universe is None:
             pa = self.controller.port_address(address.rdm_uid)
-            profile.universe = None if pa is None else pa + 1   # GelMatch numbering: Art-Net port address 0 = universe 1
+            # GelMatch numbering: Art-Net port address 0 = universe 1
+            profile.universe = None if pa is None else pa + 1
         if save and self.store:
             self._device_ids[address.rdm_uid] = self.store.save_profile(profile)
         return profile

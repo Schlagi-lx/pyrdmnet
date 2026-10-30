@@ -1,4 +1,4 @@
-"""Live-Test-Ablauf offline gegen den Simulator (ersetzt nicht den Realtest)."""
+"""Live test flow offline against the simulator (does not replace the real test)."""
 
 import asyncio
 import json
@@ -61,33 +61,33 @@ class TestLiveTest(unittest.IsolatedAsyncioTestCase):
         lines = (lt.folder / "paketmitschnitt.jsonl").read_text().splitlines()
         self.assertGreater(len(lines), 10)
         self.assertEqual(json.loads(lines[0])["richtung"], "ein")
-        self.assertTrue(any("VERBUNDEN" in z for z in self.output))
+        self.assertTrue(any("CONNECTED" in z for z in self.output))
         self.assertIn("SIM-PAR RGBL", (lt.folder / "bericht.md").read_text())
-        self.assertIn("nur lesend", (lt.folder / "bericht.md").read_text())
+        self.assertIn("read-only", (lt.folder / "bericht.md").read_text())
         ports = res["gateways"][0]["ports"]
         self.assertEqual(ports[0]["mode"], "Ausgang")
         self.assertEqual(ports[0]["name"], "DMX Port 1")
         self.assertEqual(ports[0]["universe"], 1)
         self.assertEqual(len(ports[0]["responder"]), 1)
-        self.assertTrue(any("Modus Ausgang" in z for z in self.output))
+        self.assertTrue(any(f"Mode {ports[0]['mode']}" in z for z in self.output))
 
     async def test_nobody_connects(self):
         lt, res = await self._run_test(None)
         self.assertFalse(res["success"])
-        self.assertIn("Kein RDMnet-Gerät hat sich verbunden", res["error"])
-        self.assertTrue(any("Keine TCP-Verbindung" in h for h in res["hints"]))
+        self.assertIn("No RDMnet device has connected", res["error"])
+        self.assertTrue(any("No TCP connection" in h for h in res["hints"]))
 
     async def test_wrong_scope_reported(self):
         lt, res = await self._run_test(SimulatedGateway(scope="stage"))
         self.assertFalse(res["success"])
-        self.assertTrue(any("ABGELEHNT" in z and "stage" in z for z in self.output))
+        self.assertTrue(any("REJECTED" in z and "stage" in z for z in self.output))
         self.assertTrue(any("Scope" in h for h in res["hints"]))
 
     async def test_gateway_without_fixture(self):
         g = SimulatedGateway()
         orig = g._responder_reply
 
-        def without(endpoint, a):  # Port 1 meldet keine Responder
+        def without(endpoint, a):  # port 1 reports no responders
             from pyrdmnet import constants as C
             from pyrdmnet import rdm_params as R
             if endpoint == 0 and a.pid == C.PID_ENDPOINT_RESPONDERS:
@@ -97,15 +97,15 @@ class TestLiveTest(unittest.IsolatedAsyncioTestCase):
         lt, res = await self._run_test(g)
         self.assertFalse(res["success"])
         self.assertEqual(len(res["gateways"]), 1)
-        self.assertTrue(any("Keine RDM-Responder" in f for f in res["error"]))
+        self.assertTrue(any("No RDM responders" in f for f in res["error"]))
         self.assertEqual(res["gateways"][0]["ports_after_search"][0]["responder"], [])
-        self.assertTrue(any("DMX-Ausgang" in h for h in res["hints"]))
+        self.assertTrue(any("DMX output" in h for h in res["hints"]))
 
     async def test_foreign_ip(self):
         k = LiveConfig(host="203.0.113.7", folder=Path(self.tmp.name))
         res = await LiveTest(k, output=self.output.append).run()
         self.assertFalse(res.get("success"))
-        self.assertIn("gehört zu keinem Netzwerkadapter", res["error"][0])
+        self.assertIn("does not belong to any network adapter", res["error"][0])
 
 
 class TestAdapter(unittest.TestCase):
@@ -138,7 +138,7 @@ if __name__ == "__main__":
 
 
 class TestMasterPortCapture(unittest.TestCase):
-    """Antworten aus dem echten Live-Test vom 26.10.2026 (LSS MasterPort 2, Firmware v2.13.0028)."""
+    """Responses from the real live test on 2026-10-26 (LSS MasterPort 2, firmware v2.13.0028)."""
 
     def test_decode_responses(self):
         from pyrdmnet import rdm_params as R
