@@ -78,7 +78,7 @@ class TestCommand(unittest.TestCase):
 
     def test_txt(self):
         t = dnssd.txt_entries("stage", CID, Uid(0x7FF0, 1))
-        self.assertEqual((t["E133Scope"], t["E133Vers"]), ("stage", "1"))
+        self.assertEqual((t["E133Scope"], t["E133Vers"], t["Manuf"]), ("stage", "1", "pyrdmnet"))
 
     def test_no_method(self):
         with mock.patch("shutil.which", return_value=None), mock.patch.dict("sys.modules", {"zeroconf": None}):

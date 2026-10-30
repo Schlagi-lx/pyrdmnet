@@ -33,7 +33,7 @@ SERVICE_TYPE = "_rdmnet._tcp"
 
 
 def txt_entries(scope: str, cid: uuid.UUID, uid: Uid, model: str = "pyrdmnet Broker",
-                  manufacturer: str = "GelMatch") -> dict[str, str]:
+                  manufacturer: str = "pyrdmnet") -> dict[str, str]:
     return {
         "TxtVers": "1",
         "E133Scope": scope,
