@@ -107,6 +107,7 @@ class RdmnetBroker:
         self.counters = collections.Counter()
         self.port: int | None = None
         self._capture_lines = 0
+        self._stopping = False
         self.llrp_target: LlrpTarget | None = None
         self.state = C.E133_BROKER_ACTIVE  # STANDBY while another broker holds the scope (9.1.4)
         k = self.config
@@ -116,6 +117,7 @@ class RdmnetBroker:
 
     # ----------------------------------------------------------------- Lifecycle
     async def start(self) -> None:
+        self._stopping = False
         self._server = await asyncio.start_server(self._new_connection, self.config.host, self.config.port)
         self.port = self._server.sockets[0].getsockname()[1]
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
@@ -133,24 +135,27 @@ class RdmnetBroker:
                        uid=str(self.config.uid), cid=str(self.config.cid))
 
     async def stop(self) -> None:
+        self._stopping = True
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
         if self.llrp_target:
             await self.llrp_target.stop()
             self.llrp_target = None
+        # stop accepting first: clients with automatic reconnection would otherwise reconnect to the stopping broker
+        if self._server:
+            self._server.close()
         for c in self._all_clients():
             try:
                 await c.connection.send_broker(C.VECTOR_BROKER_DISCONNECT, C.E133_DISCONNECT_SHUTDOWN.to_bytes(2, "big"))
             except Exception:
                 pass
             await c.connection.close()
-        if self._server:
-            self._server.close()
-            await self._server.wait_closed()
         for t in list(self._connection_tasks):
             t.cancel()
         if self._connection_tasks:
             await asyncio.gather(*self._connection_tasks, return_exceptions=True)
+        if self._server:
+            await self._server.wait_closed()
         self._clients.clear()
         self._ept_clients.clear()
         self._event("broker_stopped")
@@ -207,6 +212,9 @@ class RdmnetBroker:
 
     # ----------------------------------------------------------------- Connection
     async def _new_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        if self._stopping:  # accepted just before the listening socket was closed
+            writer.close()
+            return
         task = asyncio.current_task()
         self._connection_tasks.add(task)
         v = TcpConnection(reader, writer, self.config.cid)

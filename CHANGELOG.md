@@ -13,6 +13,10 @@
   during connect and while connected. New: `wait_connected()`, `auto_reconnecting`, `reconnect_count`,
   `on_connection_change`. The facade connects its controller with automatic reconnection and waits up to
   `RdmConfig.reconnect_wait_s` (10 s) for it. Leftover tasks of a previous connection are cancelled.
+- Read-only facade calls (`find_devices`, `read_device`, `sensor_snapshot`) are repeated once after an automatic
+  reconnection if the connection dropped during the call; writing calls are never repeated automatically.
+- Fix: `RdmnetBroker.stop()` now stops accepting connections before disconnecting the clients, so reconnecting
+  clients no longer land on the stopping broker (showed up on Windows); late connections are closed at once.
 - One broker per scope (E1.33 9.1.4): `BrokerAnnouncer` looks for other brokers on the scope before registering via
   mDNS, keeps the broker in STANDBY while there is one (re-checks every 15 s) and warns when another broker appears
   later (check every 60 s). Used by `broker --dnssd`, `RdmConfig.dnssd` and the live test. `BROKER_STATUS` reports

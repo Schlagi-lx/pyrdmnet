@@ -37,6 +37,7 @@ from . import settings_check as A
 from . import constants as C
 from .readout import DeviceReader, DeviceAddress, DeviceProfile, SensorSnapshot, now_utc
 from .broker import BrokerConfig, RdmnetBroker
+from .client import RdmnetConnectionError
 from .controller import RdmnetController
 from .rdm import Uid
 from .storage import RdmStore
@@ -142,10 +143,13 @@ class RdmModule:
             if not self.controller.connected:
                 await self.controller.connect()
             return self.controller
-        if self.controller is not None and not self.controller.connected and self.controller.auto_reconnecting:
-            # E1.33 6.2.5: the controller reconnects by itself - wait instead of opening a second connection
-            await self.controller.wait_connected(self.config.reconnect_wait_s)
-            await self.controller.client_list(timeout_s=self.config.timeout_s)
+        c = self.controller
+        if c is not None and c.auto_reconnecting:
+            # E1.33 6.2.5: the controller reconnects by itself - wait, never open a second connection
+            if not c.connected:
+                await c.wait_connected(self.config.reconnect_wait_s)
+                await c.client_list(timeout_s=self.config.timeout_s)
+            return c
         if self.controller is None or not self.controller.connected:
             permission = self.controller.write_enabled if self.controller else False
             await self._connect_controller()
@@ -175,6 +179,16 @@ class RdmModule:
         if self.broker:
             await self.broker.stop()
 
+    async def _read_with_retry(self, action):
+        """Run a read-only action; if the connection drops meanwhile and the controller reconnects
+        by itself, wait for it and try once more. Writing actions are never repeated automatically."""
+        try:
+            return await action(await self._connected())
+        except RdmnetConnectionError:
+            if self.config.transport == "ARTNET" or not (self.controller and self.controller.auto_reconnecting):
+                raise
+            return await action(await self._connected())
+
     def broker_status(self) -> dict | None:
         return self.broker.status() if self.broker else None
 
@@ -185,12 +199,12 @@ class RdmModule:
         async def f():
             if k.transport == "ARTNET":
                 return await (await self._connected()).query_tod(list(k.artnet_port_addresses), k.artnet_tod_wait_s)
-            return await DeviceReader(await self._connected(), k.timeout_s).find_devices()
+            return await self._read_with_retry(lambda c: DeviceReader(c, k.timeout_s).find_devices())
         return self._run(f(), timeout=None if k.transport != "ARTNET" else 4 * k.artnet_tod_wait_s + 10)
 
     def read_device(self, address: DeviceAddress, save: bool = True) -> DeviceProfile:
         async def f():
-            return await DeviceReader(await self._connected(), self.config.timeout_s).profile(address)
+            return await self._read_with_retry(lambda c: DeviceReader(c, self.config.timeout_s).profile(address))
         profile = self._run(f())
         if self.config.transport == "ARTNET" and profile.universe is None:
             pa = self.controller.port_address(address.rdm_uid)
@@ -256,8 +270,8 @@ class RdmModule:
     def sensor_snapshot(self, profile: DeviceProfile, measurement_ref: str | None = None,
                              phase: str = "single") -> SensorSnapshot:
         async def f():
-            return await DeviceReader(await self._connected(), self.config.timeout_s).sensor_snapshot(
-                profile.address, profile.sensors, self.config.all_sensors)
+            return await self._read_with_retry(lambda c: DeviceReader(c, self.config.timeout_s).sensor_snapshot(
+                profile.address, profile.sensors, self.config.all_sensors))
         try:
             s = self._run(f(), timeout=self.config.timeout_s * (len(profile.sensors) + 2))
         except Exception as error:  # RDM must not disturb the measurement
