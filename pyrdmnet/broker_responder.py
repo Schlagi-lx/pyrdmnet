@@ -22,113 +22,113 @@ from dataclasses import dataclass
 from typing import Callable
 
 from . import __version__
-from . import konstanten as K
-from . import rdm_parameter as R
-from .rdm import RdmNachricht, Uid
+from . import constants as C
+from . import rdm_params as R
+from .rdm import RdmMessage, Uid
 
 # E1.20 Produktkategorie „Data Distribution“ (Datenverteilung)
-PRODUKTKATEGORIE_DATENVERTEILUNG = 0x0700
+PRODUCT_CATEGORY_DATA_DISTRIBUTION = 0x0700
 
-UNTERSTUETZTE_PIDS = (
-    K.PID_SUPPORTED_PARAMETERS,
-    K.PID_DEVICE_INFO,
-    K.PID_MANUFACTURER_LABEL,
-    K.PID_DEVICE_MODEL_DESCRIPTION,
-    K.PID_SOFTWARE_VERSION_LABEL,
-    K.PID_DEVICE_LABEL,
-    K.PID_IDENTIFY_DEVICE,
-    K.PID_COMPONENT_SCOPE,
-    K.PID_SEARCH_DOMAIN,
-    K.PID_BROKER_STATUS,
+SUPPORTED_PIDS = (
+    C.PID_SUPPORTED_PARAMETERS,
+    C.PID_DEVICE_INFO,
+    C.PID_MANUFACTURER_LABEL,
+    C.PID_DEVICE_MODEL_DESCRIPTION,
+    C.PID_SOFTWARE_VERSION_LABEL,
+    C.PID_DEVICE_LABEL,
+    C.PID_IDENTIFY_DEVICE,
+    C.PID_COMPONENT_SCOPE,
+    C.PID_SEARCH_DOMAIN,
+    C.PID_BROKER_STATUS,
 )
 
 
-def _version_als_zahl(text: str) -> int:
+def _version_as_number(text: str) -> int:
     """'0.4.1' -> 0x00000401 (je Teil ein Byte, für DEVICE_INFO)."""
-    teile = [int(t) if t.isdigit() else 0 for t in text.split(".")[:4]]
-    zahl = 0
-    for t in teile:
-        zahl = (zahl << 8) | (t & 0xFF)
-    return zahl
+    parts = [int(t) if t.isdigit() else 0 for t in text.split(".")[:4]]
+    number = 0
+    for t in parts:
+        number = (number << 8) | (t & 0xFF)
+    return number
 
 
-def baue_component_scope(slot: int, scope: str) -> bytes:
+def build_component_scope(slot: int, scope: str) -> bytes:
     """COMPONENT_SCOPE-Antwort des Brokers: immer ohne statische Konfiguration (E1.33 7.6.2)."""
-    return R.baue_component_scope(R.ComponentScope(slot, scope))
+    return R.build_component_scope(R.ComponentScope(slot, scope))
 
 
 @dataclass
-class BrokerResponderDaten:
+class BrokerResponderInfo:
     uid: Uid
     scope: str
-    suchdomain: str = K.E133_STANDARD_DOMAIN
-    hersteller_label: str = "pyrdmnet"
-    modell: str = "pyrdmnet Broker"
-    geraete_label: str = "pyrdmnet Broker"
-    modell_id: int = 0x0001
+    search_domain: str = C.E133_DEFAULT_DOMAIN
+    manufacturer_label: str = "pyrdmnet"
+    model: str = "pyrdmnet Broker"
+    device_label: str = "pyrdmnet Broker"
+    model_id: int = 0x0001
     software_label: str = f"pyrdmnet {__version__}"
 
 
 class BrokerResponder:
     """Beantwortet RDM-Befehle, die an die Broker-UID gerichtet sind."""
 
-    def __init__(self, daten: BrokerResponderDaten, ereignis: Callable[..., None] | None = None):
-        self.daten = daten
-        self.identifizieren = False
-        self._ereignis = ereignis or (lambda art, **kw: None)
+    def __init__(self, data: BrokerResponderInfo, event: Callable[..., None] | None = None):
+        self.data = data
+        self.identifying = False
+        self._event = event or (lambda kind, **kw: None)
 
-    def beantworten(self, a: RdmNachricht) -> RdmNachricht | None:
+    def respond(self, a: RdmMessage) -> RdmMessage | None:
         """Antwort auf eine RDM-Anfrage; None bei Broadcast (E1.20: keine Antwort)."""
-        if a.ziel.ist_broadcast:
+        if a.dest.is_broadcast:
             return None
-        nack = lambda grund: a.antwort(K.ANTWORT_NACK, struct.pack(">H", grund))  # noqa: E731
-        if a.subdevice != K.RDM_ROOT_DEVICE:
-            return nack(K.NR_SUB_DEVICE_OUT_OF_RANGE)
-        if a.command_class == K.CC_GET:
-            ergebnis = self._get(a.pid, a.daten)
-            if isinstance(ergebnis, int):
-                return nack(ergebnis)
-            return a.antwort(K.ANTWORT_ACK, ergebnis)
-        if a.command_class == K.CC_SET:
-            if a.pid == K.PID_IDENTIFY_DEVICE:
-                if len(a.daten) != 1 or a.daten[0] > 1:
-                    return nack(K.NR_FORMAT_ERROR)
-                self.identifizieren = bool(a.daten[0])
-                self._ereignis("broker_identify", aktiv=self.identifizieren, von=str(a.quelle))
-                return a.antwort(K.ANTWORT_ACK)
-            return nack(K.NR_UNSUPPORTED_COMMAND_CLASS if a.pid in UNTERSTUETZTE_PIDS else K.NR_UNKNOWN_PID)
-        return nack(K.NR_UNSUPPORTED_COMMAND_CLASS)
+        nack = lambda reason: a.response(C.RESPONSE_NACK, struct.pack(">H", reason))  # noqa: E731
+        if a.subdevice != C.RDM_ROOT_DEVICE:
+            return nack(C.NR_SUB_DEVICE_OUT_OF_RANGE)
+        if a.command_class == C.CC_GET:
+            result = self._get(a.pid, a.data)
+            if isinstance(result, int):
+                return nack(result)
+            return a.response(C.RESPONSE_ACK, result)
+        if a.command_class == C.CC_SET:
+            if a.pid == C.PID_IDENTIFY_DEVICE:
+                if len(a.data) != 1 or a.data[0] > 1:
+                    return nack(C.NR_FORMAT_ERROR)
+                self.identifying = bool(a.data[0])
+                self._event("broker_identify", active=self.identifying, by=str(a.source))
+                return a.response(C.RESPONSE_ACK)
+            return nack(C.NR_UNSUPPORTED_COMMAND_CLASS if a.pid in SUPPORTED_PIDS else C.NR_UNKNOWN_PID)
+        return nack(C.NR_UNSUPPORTED_COMMAND_CLASS)
 
     def _get(self, pid: int, d: bytes) -> bytes | int:
-        dd = self.daten
-        if pid == K.PID_SUPPORTED_PARAMETERS:
+        dd = self.data
+        if pid == C.PID_SUPPORTED_PARAMETERS:
             # E1.20: die Pflicht-PIDs (SUPPORTED_PARAMETERS, DEVICE_INFO, SOFTWARE_VERSION_LABEL,
             # IDENTIFY_DEVICE) werden nicht aufgeführt
-            pflicht = {K.PID_SUPPORTED_PARAMETERS, K.PID_DEVICE_INFO, K.PID_SOFTWARE_VERSION_LABEL,
-                       K.PID_IDENTIFY_DEVICE}
-            return b"".join(struct.pack(">H", p) for p in UNTERSTUETZTE_PIDS if p not in pflicht)
-        if pid == K.PID_DEVICE_INFO:
-            return R.baue_device_info(R.DeviceInfo(0x0100, dd.modell_id, PRODUKTKATEGORIE_DATENVERTEILUNG,
-                                                   _version_als_zahl(__version__), 0, 0, 0, 0xFFFF, 0, 0))
-        if pid == K.PID_MANUFACTURER_LABEL:
-            return R.baue_text(dd.hersteller_label)
-        if pid == K.PID_DEVICE_MODEL_DESCRIPTION:
-            return R.baue_text(dd.modell)
-        if pid == K.PID_SOFTWARE_VERSION_LABEL:
-            return R.baue_text(dd.software_label)
-        if pid == K.PID_DEVICE_LABEL:
-            return R.baue_text(dd.geraete_label)
-        if pid == K.PID_IDENTIFY_DEVICE:
-            return bytes((int(self.identifizieren),))
-        if pid == K.PID_COMPONENT_SCOPE:
+            required_pids = {C.PID_SUPPORTED_PARAMETERS, C.PID_DEVICE_INFO, C.PID_SOFTWARE_VERSION_LABEL,
+                       C.PID_IDENTIFY_DEVICE}
+            return b"".join(struct.pack(">H", p) for p in SUPPORTED_PIDS if p not in required_pids)
+        if pid == C.PID_DEVICE_INFO:
+            return R.build_device_info(R.DeviceInfo(0x0100, dd.model_id, PRODUCT_CATEGORY_DATA_DISTRIBUTION,
+                                                   _version_as_number(__version__), 0, 0, 0, 0xFFFF, 0, 0))
+        if pid == C.PID_MANUFACTURER_LABEL:
+            return R.build_text(dd.manufacturer_label)
+        if pid == C.PID_DEVICE_MODEL_DESCRIPTION:
+            return R.build_text(dd.model)
+        if pid == C.PID_SOFTWARE_VERSION_LABEL:
+            return R.build_text(dd.software_label)
+        if pid == C.PID_DEVICE_LABEL:
+            return R.build_text(dd.device_label)
+        if pid == C.PID_IDENTIFY_DEVICE:
+            return bytes((int(self.identifying),))
+        if pid == C.PID_COMPONENT_SCOPE:
             if len(d) != 2:
-                return K.NR_FORMAT_ERROR
+                return C.NR_FORMAT_ERROR
             (slot,) = struct.unpack(">H", d)
             if slot != 1:  # der Broker bedient genau einen Scope
-                return K.NR_DATA_OUT_OF_RANGE
-            return baue_component_scope(1, dd.scope)
-        if pid == K.PID_SEARCH_DOMAIN:
-            return dd.suchdomain.encode("utf-8")[:K.E133_DOMAIN_LAENGE]
-        if pid == K.PID_BROKER_STATUS:
-            return bytes((0, K.E133_BROKER_AKTIV))  # Set Allowed = 0, Zustand aktiv
-        return K.NR_UNKNOWN_PID
+                return C.NR_DATA_OUT_OF_RANGE
+            return build_component_scope(1, dd.scope)
+        if pid == C.PID_SEARCH_DOMAIN:
+            return dd.search_domain.encode("utf-8")[:C.E133_DOMAIN_LENGTH]
+        if pid == C.PID_BROKER_STATUS:
+            return bytes((0, C.E133_BROKER_ACTIVE))  # Set Allowed = 0, Zustand aktiv
+        return C.NR_UNKNOWN_PID

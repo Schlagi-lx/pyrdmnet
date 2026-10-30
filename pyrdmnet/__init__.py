@@ -13,4 +13,4 @@ Grundsätze:
 """
 
 __version__ = "0.4.1"
-MODULNAME = "pyrdmnet"
+MODULE_NAME = "pyrdmnet"

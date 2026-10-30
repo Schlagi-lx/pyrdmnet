@@ -14,218 +14,218 @@ import asyncio
 import logging
 import uuid
 
-from . import konstanten as K
+from . import constants as C
 from . import pdu as P
-from .klient import RptKlient, VerbindungsFehler
-from .rdm import RdmFormatFehler, RdmNachricht, TransaktionsZaehler, Uid
+from .client import RptClient, RdmnetConnectionError
+from .rdm import RdmFormatError, RdmMessage, TransactionCounter, Uid
 
 log = logging.getLogger("pyrdmnet.controller")
 
 
-class RdmFehler(Exception):
+class RdmError(Exception):
     """Oberklasse aller Fehler einer RDM-Abfrage."""
 
 
-ERLAUBTE_SET_PIDS = frozenset({K.PID_DMX_PERSONALITY, K.PID_DMX_START_ADDRESS, K.PID_IDENTIFY_DEVICE})
+ALLOWED_SET_PIDS = frozenset({C.PID_DMX_PERSONALITY, C.PID_DMX_START_ADDRESS, C.PID_IDENTIFY_DEVICE})
 
 
-class SchreibSperreFehler(RdmFehler):
+class WriteLockError(RdmError):
     """Ein schreibender RDM-Befehl ist nicht erlaubt (PID nicht freigegeben oder keine Freigabe)."""
 
 
-class RdmZeitFehler(RdmFehler):
+class RdmTimeoutError(RdmError):
     pass
 
 
-class RdmNackFehler(RdmFehler):
-    def __init__(self, pid: int, grund: int):
-        self.pid, self.grund = pid, grund
-        super().__init__(f"NACK für {K.PID_NAMEN.get(pid, hex(pid))}: {K.NACK_TEXT.get(grund, hex(grund))}")
+class RdmNackError(RdmError):
+    def __init__(self, pid: int, reason: int):
+        self.pid, self.reason = pid, reason
+        super().__init__(f"NACK für {C.PID_NAMES.get(pid, hex(pid))}: {C.NACK_TEXT.get(reason, hex(reason))}")
 
 
-class RptStatusFehler(RdmFehler):
+class RptStatusError(RdmError):
     def __init__(self, code: int, text: str = ""):
         self.code = code
-        super().__init__(f"RPT-Status: {K.RPT_STATUS_TEXT.get(code, hex(code))} {text}".strip())
+        super().__init__(f"RPT-Status: {C.RPT_STATUS_TEXT.get(code, hex(code))} {text}".strip())
 
 
-class RdmAntwortFehler(RdmFehler):
+class RdmResponseError(RdmError):
     """Antwort formal ungültig oder passt nicht zur Anfrage."""
 
 
-class RdmnetController(RptKlient):
-    def __init__(self, uid: Uid | None = None, scope: str = K.E133_STANDARD_SCOPE, cid: uuid.UUID | None = None,
+class RdmnetController(RptClient):
+    def __init__(self, uid: Uid | None = None, scope: str = C.E133_DEFAULT_SCOPE, cid: uuid.UUID | None = None,
                  **kwargs):
         # Standard: dynamische UID im ESTA-Prototypenbereich anfordern
-        uid = uid or Uid(0x8000 | K.ESTA_PROTOTYP_HERSTELLER, 0)
-        super().__init__(K.RPT_CLIENT_TYP_CONTROLLER, uid, scope, cid, inkrementell=True, **kwargs)
-        self.clients: dict[Uid, P.ClientEintrag] = {}
-        self._clientliste_da = asyncio.Event()
-        self._offen: dict[int, asyncio.Future] = {}
-        self._sequenz = 0
-        self._tn = TransaktionsZaehler()
-        self.unaufgeforderte_meldungen: list[tuple[Uid, int, bytes]] = []
+        uid = uid or Uid(0x8000 | C.ESTA_PROTOTYPE_MANUFACTURER, 0)
+        super().__init__(C.RPT_CLIENT_TYPE_CONTROLLER, uid, scope, cid, incremental=True, **kwargs)
+        self.clients: dict[Uid, P.ClientEntry] = {}
+        self._client_list_ready = asyncio.Event()
+        self._pending: dict[int, asyncio.Future] = {}
+        self._sequence = 0
+        self._tn = TransactionCounter()
+        self.unsolicited_messages: list[tuple[Uid, int, bytes]] = []
         self.ack_timer_max_s = 10.0
         self.ack_overflow_max = 32
-        self.schreibfreigabe = False  # je Sitzung aktiv setzen (Checkliste vor Ort)
+        self.write_enabled = False  # je Sitzung aktiv setzen (Checkliste vor Ort)
 
     # ----------------------------------------------------------------- Clientliste
-    async def _nach_verbindung(self) -> None:
-        self._clientliste_da.clear()
-        await self.sende_broker(K.VECTOR_BROKER_FETCH_CLIENT_LIST)
+    async def _after_connect(self) -> None:
+        self._client_list_ready.clear()
+        await self.send_broker(C.VECTOR_BROKER_FETCH_CLIENT_LIST)
 
-    async def _nach_trennung(self, grund: str) -> None:
-        for f in self._offen.values():
+    async def _after_disconnect(self, reason: str) -> None:
+        for f in self._pending.values():
             if not f.done():
-                f.set_exception(VerbindungsFehler(f"Verbindung getrennt: {grund}"))
-        self._offen.clear()
+                f.set_exception(RdmnetConnectionError(f"Verbindung getrennt: {reason}"))
+        self._pending.clear()
 
-    async def clientliste(self, timeout_s: float = 5.0, neu_abfragen: bool = False) -> dict[Uid, P.ClientEintrag]:
-        if neu_abfragen:
-            self._clientliste_da.clear()
-            await self.sende_broker(K.VECTOR_BROKER_FETCH_CLIENT_LIST)
-        await asyncio.wait_for(self._clientliste_da.wait(), timeout_s)
+    async def client_list(self, timeout_s: float = 5.0, refresh: bool = False) -> dict[Uid, P.ClientEntry]:
+        if refresh:
+            self._client_list_ready.clear()
+            await self.send_broker(C.VECTOR_BROKER_FETCH_CLIENT_LIST)
+        await asyncio.wait_for(self._client_list_ready.wait(), timeout_s)
         return dict(self.clients)
 
-    def geraete(self) -> list[P.ClientEintrag]:
-        return [e for e in self.clients.values() if e.typ == K.RPT_CLIENT_TYP_GERAET]
+    def devices(self) -> list[P.ClientEntry]:
+        return [e for e in self.clients.values() if e.type == C.RPT_CLIENT_TYPE_DEVICE]
 
-    async def _bei_broker(self, bp: P.BrokerPdu) -> None:
-        if bp.vektor == K.VECTOR_BROKER_CONNECTED_CLIENT_LIST:
-            self.clients = {e.uid: e for e in P.lese_client_eintraege(bp.daten)
-                            if e.protokoll == K.E133_CLIENT_PROTOKOLL_RPT}
-            self._clientliste_da.set()
-        elif bp.vektor in (K.VECTOR_BROKER_CLIENT_ADD, K.VECTOR_BROKER_CLIENT_ENTRY_CHANGE):
-            for e in P.lese_client_eintraege(bp.daten):
-                if e.protokoll == K.E133_CLIENT_PROTOKOLL_RPT:
+    async def _on_broker(self, bp: P.BrokerPdu) -> None:
+        if bp.vector == C.VECTOR_BROKER_CONNECTED_CLIENT_LIST:
+            self.clients = {e.uid: e for e in P.read_client_entries(bp.data)
+                            if e.protocol == C.E133_CLIENT_PROTOCOL_RPT}
+            self._client_list_ready.set()
+        elif bp.vector in (C.VECTOR_BROKER_CLIENT_ADD, C.VECTOR_BROKER_CLIENT_ENTRY_CHANGE):
+            for e in P.read_client_entries(bp.data):
+                if e.protocol == C.E133_CLIENT_PROTOCOL_RPT:
                     # Entry Change kann die UID ändern: alten Eintrag derselben CID ersetzen
-                    for alt in [u for u, a in self.clients.items() if a.cid == e.cid]:
-                        del self.clients[alt]
+                    for old in [u for u, a in self.clients.items() if a.cid == e.cid]:
+                        del self.clients[old]
                     self.clients[e.uid] = e
-        elif bp.vektor == K.VECTOR_BROKER_CLIENT_REMOVE:
-            for e in P.lese_client_eintraege(bp.daten):
+        elif bp.vector == C.VECTOR_BROKER_CLIENT_REMOVE:
+            for e in P.read_client_entries(bp.data):
                 self.clients.pop(e.uid, None)
 
     # ----------------------------------------------------------------- RPT-Empfang
-    async def _bei_rpt(self, rpt: P.RptPdu) -> None:
-        k = rpt.kopf
-        f = self._offen.get(k.sequenz)
-        if k.vektor == K.VECTOR_RPT_STATUS:
-            code, text = P.lese_status(rpt.daten)
+    async def _on_rpt(self, rpt: P.RptPdu) -> None:
+        k = rpt.header
+        f = self._pending.get(k.sequence)
+        if k.vector == C.VECTOR_RPT_STATUS:
+            code, text = P.read_status(rpt.data)
             if f and not f.done():
-                f.set_exception(RptStatusFehler(code, text))
+                f.set_exception(RptStatusError(code, text))
             return
-        if k.vektor != K.VECTOR_RPT_NOTIFICATION:
+        if k.vector != C.VECTOR_RPT_NOTIFICATION:
             return
-        nachrichten = P.lese_request_oder_notification(rpt.daten, K.VECTOR_NOTIFICATION_RDM_CMD)
+        messages = P.read_request_or_notification(rpt.data, C.VECTOR_NOTIFICATION_RDM_CMD)
         if f and not f.done():
-            f.set_result(nachrichten)
+            f.set_result(messages)
         else:
-            for n in nachrichten:
-                self.unaufgeforderte_meldungen.append((k.quelle, k.quelle_endpoint, n))
-            del self.unaufgeforderte_meldungen[:-200]
+            for n in messages:
+                self.unsolicited_messages.append((k.source, k.source_endpoint, n))
+            del self.unsolicited_messages[:-200]
 
     # ----------------------------------------------------------------- RDM GET
-    def _naechste_sequenz(self) -> int:
-        self._sequenz = (self._sequenz % 0xFFFFFFFF) + 1
-        return self._sequenz
+    def _next_sequence(self) -> int:
+        self._sequence = (self._sequence % 0xFFFFFFFF) + 1
+        return self._sequence
 
-    async def _sende_und_warte(self, rpt_ziel: Uid, endpoint: int, anfrage: RdmNachricht,
-                               timeout_s: float) -> RdmNachricht:
-        self._schreibrecht_pruefen(anfrage.command_class, anfrage.pid)
-        seq = self._naechste_sequenz()
+    async def _send_and_wait(self, rpt_dest: Uid, endpoint: int, request: RdmMessage,
+                               timeout_s: float) -> RdmMessage:
+        self._check_write_permission(request.command_class, request.pid)
+        seq = self._next_sequence()
         fut = asyncio.get_running_loop().create_future()
-        self._offen[seq] = fut
-        kopf = P.RptKopf(K.VECTOR_RPT_REQUEST, self.uid, K.E133_NULL_ENDPOINT, rpt_ziel, endpoint, seq)
+        self._pending[seq] = fut
+        header = P.RptHeader(C.VECTOR_RPT_REQUEST, self.uid, C.E133_NULL_ENDPOINT, rpt_dest, endpoint, seq)
         try:
-            await self.sende_rpt(kopf, P.baue_request(anfrage.kodieren()))
-            nachrichten = await asyncio.wait_for(fut, timeout_s)
-        except asyncio.TimeoutError as fehler:
-            raise RdmZeitFehler(f"Keine Antwort auf {K.PID_NAMEN.get(anfrage.pid, hex(anfrage.pid))} "
-                                f"von {anfrage.ziel} binnen {timeout_s:.1f} s") from fehler
+            await self.send_rpt(header, P.build_request(request.encode()))
+            messages = await asyncio.wait_for(fut, timeout_s)
+        except asyncio.TimeoutError as error:
+            raise RdmTimeoutError(f"Keine Antwort auf {C.PID_NAMES.get(request.pid, hex(request.pid))} "
+                                f"von {request.dest} binnen {timeout_s:.1f} s") from error
         finally:
-            self._offen.pop(seq, None)
-        return self._antwort_auswaehlen(anfrage, nachrichten)
+            self._pending.pop(seq, None)
+        return self._select_response(request, messages)
 
-    def _schreibrecht_pruefen(self, cc: int, pid: int) -> None:
-        if cc == K.CC_GET:
+    def _check_write_permission(self, cc: int, pid: int) -> None:
+        if cc == C.CC_GET:
             return
-        if cc != K.CC_SET:
-            raise SchreibSperreFehler("Discovery-Befehle sendet das Messlabor nicht")
-        if pid not in ERLAUBTE_SET_PIDS:
-            raise SchreibSperreFehler(f"SET für {K.PID_NAMEN.get(pid, hex(pid))} nicht freigegeben")
-        if not self.schreibfreigabe:
-            raise SchreibSperreFehler("Keine Schreibfreigabe für diese Sitzung")
+        if cc != C.CC_SET:
+            raise WriteLockError("Discovery-Befehle sendet das Messlabor nicht")
+        if pid not in ALLOWED_SET_PIDS:
+            raise WriteLockError(f"SET für {C.PID_NAMES.get(pid, hex(pid))} nicht freigegeben")
+        if not self.write_enabled:
+            raise WriteLockError("Keine Schreibfreigabe für diese Sitzung")
 
     @staticmethod
-    def _antwort_auswaehlen(anfrage: RdmNachricht, nachrichten: list[bytes]) -> RdmNachricht:
+    def _select_response(request: RdmMessage, messages: list[bytes]) -> RdmMessage:
         """Notification enthält Anfrage und Antwort; die passende Antwort heraussuchen."""
-        for roh in nachrichten:
+        for raw in messages:
             try:
-                n = RdmNachricht.dekodieren(roh)
-            except RdmFormatFehler as fehler:
-                raise RdmAntwortFehler(f"RDM-Antwort ungültig: {fehler}") from fehler
-            if not n.ist_antwort:
+                n = RdmMessage.decode(raw)
+            except RdmFormatError as error:
+                raise RdmResponseError(f"RDM-Antwort ungültig: {error}") from error
+            if not n.is_response:
                 continue
-            soll_cc = K.CC_GET_RESPONSE if anfrage.command_class == K.CC_GET else K.CC_SET_RESPONSE
-            if (n.pid != anfrage.pid or n.transaktion != anfrage.transaktion or n.quelle != anfrage.ziel
-                    or n.command_class != soll_cc):
-                raise RdmAntwortFehler(f"Antwort passt nicht zur Anfrage (PID {n.pid:#06x}, TN {n.transaktion})")
+            expected_cc = C.CC_GET_RESPONSE if request.command_class == C.CC_GET else C.CC_SET_RESPONSE
+            if (n.pid != request.pid or n.transaction != request.transaction or n.source != request.dest
+                    or n.command_class != expected_cc):
+                raise RdmResponseError(f"Antwort passt nicht zur Anfrage (PID {n.pid:#06x}, TN {n.transaction})")
             return n
-        raise RdmAntwortFehler("Notification ohne RDM-Antwort")
+        raise RdmResponseError("Notification ohne RDM-Antwort")
 
-    async def rdm_get(self, rpt_ziel: Uid, pid: int, daten: bytes = b"", endpoint: int = K.E133_NULL_ENDPOINT,
-                      rdm_ziel: Uid | None = None, subdevice: int = K.RDM_ROOT_DEVICE,
+    async def rdm_get(self, rpt_dest: Uid, pid: int, data: bytes = b"", endpoint: int = C.E133_NULL_ENDPOINT,
+                      rdm_dest: Uid | None = None, subdevice: int = C.RDM_ROOT_DEVICE,
                       timeout_s: float = 3.0) -> bytes:
-        return await self._rdm_befehl(K.CC_GET, rpt_ziel, pid, daten, endpoint, rdm_ziel, subdevice, timeout_s)
+        return await self._rdm_command(C.CC_GET, rpt_dest, pid, data, endpoint, rdm_dest, subdevice, timeout_s)
 
-    async def rdm_set(self, rpt_ziel: Uid, pid: int, daten: bytes, endpoint: int = K.E133_NULL_ENDPOINT,
-                      rdm_ziel: Uid | None = None, subdevice: int = K.RDM_ROOT_DEVICE,
+    async def rdm_set(self, rpt_dest: Uid, pid: int, data: bytes, endpoint: int = C.E133_NULL_ENDPOINT,
+                      rdm_dest: Uid | None = None, subdevice: int = C.RDM_ROOT_DEVICE,
                       timeout_s: float = 3.0) -> bytes:
         """RDM SET – nur für ERLAUBTE_SET_PIDS und mit aktiver Schreibfreigabe."""
-        self._schreibrecht_pruefen(K.CC_SET, pid)
-        return await self._rdm_befehl(K.CC_SET, rpt_ziel, pid, daten, endpoint, rdm_ziel, subdevice, timeout_s)
+        self._check_write_permission(C.CC_SET, pid)
+        return await self._rdm_command(C.CC_SET, rpt_dest, pid, data, endpoint, rdm_dest, subdevice, timeout_s)
 
-    async def _rdm_befehl(self, cc: int, rpt_ziel: Uid, pid: int, daten: bytes, endpoint: int,
-                          rdm_ziel: Uid | None, subdevice: int, timeout_s: float) -> bytes:
+    async def _rdm_command(self, cc: int, rpt_dest: Uid, pid: int, data: bytes, endpoint: int,
+                          rdm_dest: Uid | None, subdevice: int, timeout_s: float) -> bytes:
         """RDM GET/SET über RDMnet. Behandelt ACK_TIMER und ACK_OVERFLOW.
 
         rpt_ziel: UID des RDMnet-Geräts (Gateway oder natives Gerät)
         rdm_ziel: UID des RDM-Responders (Standard: rpt_ziel, also Default-Responder)
         endpoint: 0 = Default-Responder, >0 = Gateway-Port
         """
-        if not self.verbunden:
-            raise VerbindungsFehler("Nicht mit Broker verbunden")
-        rdm_ziel = rdm_ziel or rpt_ziel
-        gesamt = b""
+        if not self.connected:
+            raise RdmnetConnectionError("Nicht mit Broker verbunden")
+        rdm_dest = rdm_dest or rpt_dest
+        total = b""
         overflow = 0
-        wartezeit = 0.0
+        waited = 0.0
         while True:
-            anfrage = RdmNachricht(ziel=rdm_ziel, quelle=self.uid, transaktion=self._tn.naechste(rdm_ziel),
-                                   port_oder_antworttyp=1, command_class=cc, pid=pid, daten=daten,
+            request = RdmMessage(dest=rdm_dest, source=self.uid, transaction=self._tn.next_tn(rdm_dest),
+                                   port_or_response_type=1, command_class=cc, pid=pid, data=data,
                                    subdevice=subdevice)
-            antwort = await self._sende_und_warte(rpt_ziel, endpoint, anfrage, timeout_s)
-            typ = antwort.antworttyp
-            if typ == K.ANTWORT_ACK:
-                return gesamt + antwort.daten
-            if typ == K.ANTWORT_NACK:
-                grund = int.from_bytes(antwort.daten[:2], "big") if len(antwort.daten) >= 2 else 0xFFFF
-                raise RdmNackFehler(pid, grund)
-            if typ == K.ANTWORT_ACK_TIMER:
-                zehntel = int.from_bytes(antwort.daten[:2], "big") if len(antwort.daten) >= 2 else 1
-                pause = max(zehntel, 1) / 10.0
-                wartezeit += pause
-                if wartezeit > self.ack_timer_max_s:
-                    raise RdmZeitFehler(f"ACK_TIMER summiert über {self.ack_timer_max_s} s")
+            response = await self._send_and_wait(rpt_dest, endpoint, request, timeout_s)
+            type = response.response_type
+            if type == C.RESPONSE_ACK:
+                return total + response.data
+            if type == C.RESPONSE_NACK:
+                reason = int.from_bytes(response.data[:2], "big") if len(response.data) >= 2 else 0xFFFF
+                raise RdmNackError(pid, reason)
+            if type == C.RESPONSE_ACK_TIMER:
+                tenths = int.from_bytes(response.data[:2], "big") if len(response.data) >= 2 else 1
+                pause = max(tenths, 1) / 10.0
+                waited += pause
+                if waited > self.ack_timer_max_s:
+                    raise RdmTimeoutError(f"ACK_TIMER summiert über {self.ack_timer_max_s} s")
                 await asyncio.sleep(pause)
-                if cc == K.CC_SET:
+                if cc == C.CC_SET:
                     # SET wird nicht wiederholt (sonst doppelt ausgeführt); Ergebnis per Rücklesen prüfen
                     return b""
                 continue  # E1.20 sieht QUEUED_MESSAGE vor; hier: dieselbe GET-Anfrage wiederholen
-            if typ == K.ANTWORT_ACK_OVERFLOW:
-                gesamt += antwort.daten
+            if type == C.RESPONSE_ACK_OVERFLOW:
+                total += response.data
                 overflow += 1
                 if overflow > self.ack_overflow_max:
-                    raise RdmAntwortFehler("Zu viele ACK_OVERFLOW-Teile")
+                    raise RdmResponseError("Zu viele ACK_OVERFLOW-Teile")
                 continue
-            raise RdmAntwortFehler(f"Unbekannter Antworttyp {typ}")
+            raise RdmResponseError(f"Unbekannter Antworttyp {type}")

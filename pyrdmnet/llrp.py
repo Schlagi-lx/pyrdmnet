@@ -27,136 +27,136 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Callable
 
-from . import konstanten as K
+from . import constants as C
 from . import pdu as P
-from . import rdm_parameter as R
-from .controller import RdmAntwortFehler, RdmNackFehler, RdmZeitFehler, SchreibSperreFehler
-from .rdm import RdmFormatFehler, RdmNachricht, TransaktionsZaehler, Uid
+from . import rdm_params as R
+from .controller import RdmResponseError, RdmNackError, RdmTimeoutError, WriteLockError
+from .rdm import RdmFormatError, RdmMessage, TransactionCounter, Uid
 
 log = logging.getLogger("pyrdmnet.llrp")
 
-BROADCAST_CID = uuid.UUID(K.LLRP_BROADCAST_CID)
+BROADCAST_CID = uuid.UUID(C.LLRP_BROADCAST_CID)
 UID_MIN, UID_MAX = 0, (1 << 48) - 1
-ERLAUBTE_SET_PIDS = {K.PID_COMPONENT_SCOPE, K.PID_SEARCH_DOMAIN, K.PID_IDENTIFY_DEVICE}
+ALLOWED_SET_PIDS = {C.PID_COMPONENT_SCOPE, C.PID_SEARCH_DOMAIN, C.PID_IDENTIFY_DEVICE}
 
 
 # ------------------------------------------------------------------- Kodierung
 @dataclass
-class LlrpPaket:
+class LlrpPacket:
     sender_cid: uuid.UUID
-    vektor: int
-    ziel_cid: uuid.UUID
-    transaktion: int
-    daten: bytes
+    vector: int
+    dest_cid: uuid.UUID
+    transaction: int
+    data: bytes
 
 
-def baue_llrp(sender_cid: uuid.UUID, vektor: int, ziel_cid: uuid.UUID, transaktion: int, daten: bytes) -> bytes:
-    llrp = P.flags_laenge(3 + 4 + 16 + 4 + len(daten)) + struct.pack(">I", vektor) + ziel_cid.bytes \
-        + struct.pack(">I", transaktion & 0xFFFFFFFF) + daten
-    root = P.flags_laenge(3 + 4 + 16 + len(llrp)) + struct.pack(">I", K.VECTOR_ROOT_LLRP) + sender_cid.bytes + llrp
-    return K.ACN_UDP_PREAMBEL + root
+def build_llrp(sender_cid: uuid.UUID, vector: int, dest_cid: uuid.UUID, transaction: int, data: bytes) -> bytes:
+    llrp = P.flags_length(3 + 4 + 16 + 4 + len(data)) + struct.pack(">I", vector) + dest_cid.bytes \
+        + struct.pack(">I", transaction & 0xFFFFFFFF) + data
+    root = P.flags_length(3 + 4 + 16 + len(llrp)) + struct.pack(">I", C.VECTOR_ROOT_LLRP) + sender_cid.bytes + llrp
+    return C.ACN_UDP_PREAMBLE + root
 
 
-def lese_llrp(datagramm: bytes) -> LlrpPaket:
-    if datagramm[:16] != K.ACN_UDP_PREAMBEL:
-        raise P.ProtokollFehler("Keine ACN-UDP-Präambel")
-    roots = P.lese_root_pdus(datagramm[16:])
-    if len(roots) != 1 or roots[0].vektor != K.VECTOR_ROOT_LLRP:
-        raise P.ProtokollFehler("Keine LLRP-Root-PDU")
-    teile = P.pdus_aufteilen(roots[0].daten)
-    if len(teile) != 1:
-        raise P.ProtokollFehler("Genau eine LLRP-PDU erwartet")
-    pdu, kopf = teile[0]
-    if len(pdu) < kopf + 24:
-        raise P.ProtokollFehler("LLRP-PDU zu kurz")
-    vektor, = struct.unpack(">I", pdu[kopf:kopf + 4])
-    ziel = uuid.UUID(bytes=bytes(pdu[kopf + 4:kopf + 20]))
-    tn, = struct.unpack(">I", pdu[kopf + 20:kopf + 24])
-    return LlrpPaket(roots[0].cid, vektor, ziel, tn, bytes(pdu[kopf + 24:]))
-
-
-@dataclass
-class ProbeAnfrage:
-    untere: Uid
-    obere: Uid
-    filter: int = K.LLRP_FILTER_NUR_UNVERBUNDEN
-    bekannte: list[Uid] = field(default_factory=list)
-
-
-def baue_probe_anfrage(a: ProbeAnfrage) -> bytes:
-    if len(a.bekannte) > K.LLRP_KNOWN_UID_SIZE:
-        raise P.ProtokollFehler(f"Mehr als {K.LLRP_KNOWN_UID_SIZE} bekannte UIDs")
-    nutz = a.untere.als_bytes() + a.obere.als_bytes() + struct.pack(">H", a.filter) \
-        + b"".join(u.als_bytes() for u in a.bekannte)
-    return P.flags_laenge(4 + len(nutz)) + bytes((K.VECTOR_PROBE_REQUEST_DATA,)) + nutz
-
-
-def lese_probe_anfrage(daten: bytes) -> ProbeAnfrage:
-    teile = P.pdus_aufteilen(daten)
-    if len(teile) != 1:
-        raise P.ProtokollFehler("Genau eine Probe-Request-PDU erwartet")
-    pdu, kopf = teile[0]
-    nutz = pdu[kopf + 1:]
-    if pdu[kopf] != K.VECTOR_PROBE_REQUEST_DATA or len(nutz) < 14 or (len(nutz) - 14) % 6:
-        raise P.ProtokollFehler("Probe Request ungültig")
-    bekannte = [Uid.aus_bytes(bytes(nutz[i:i + 6])) for i in range(14, len(nutz), 6)]
-    return ProbeAnfrage(Uid.aus_bytes(bytes(nutz[:6])), Uid.aus_bytes(bytes(nutz[6:12])),
-                        struct.unpack(">H", nutz[12:14])[0], bekannte)
+def read_llrp(datagram: bytes) -> LlrpPacket:
+    if datagram[:16] != C.ACN_UDP_PREAMBLE:
+        raise P.ProtocolError("Keine ACN-UDP-Präambel")
+    roots = P.read_root_pdus(datagram[16:])
+    if len(roots) != 1 or roots[0].vector != C.VECTOR_ROOT_LLRP:
+        raise P.ProtocolError("Keine LLRP-Root-PDU")
+    parts = P.split_pdus(roots[0].data)
+    if len(parts) != 1:
+        raise P.ProtocolError("Genau eine LLRP-PDU erwartet")
+    pdu, header = parts[0]
+    if len(pdu) < header + 24:
+        raise P.ProtocolError("LLRP-PDU zu kurz")
+    vector, = struct.unpack(">I", pdu[header:header + 4])
+    target = uuid.UUID(bytes=bytes(pdu[header + 4:header + 20]))
+    tn, = struct.unpack(">I", pdu[header + 20:header + 24])
+    return LlrpPacket(roots[0].cid, vector, target, tn, bytes(pdu[header + 24:]))
 
 
 @dataclass
-class ProbeAntwort:
+class ProbeRequest:
+    lower: Uid
+    upper: Uid
+    filter: int = C.LLRP_FILTER_CLIENT_CONN_INACTIVE
+    known: list[Uid] = field(default_factory=list)
+
+
+def build_probe_request(a: ProbeRequest) -> bytes:
+    if len(a.known) > C.LLRP_KNOWN_UID_SIZE:
+        raise P.ProtocolError(f"Mehr als {C.LLRP_KNOWN_UID_SIZE} bekannte UIDs")
+    payload = a.lower.to_bytes() + a.upper.to_bytes() + struct.pack(">H", a.filter) \
+        + b"".join(u.to_bytes() for u in a.known)
+    return P.flags_length(4 + len(payload)) + bytes((C.VECTOR_PROBE_REQUEST_DATA,)) + payload
+
+
+def read_probe_request(data: bytes) -> ProbeRequest:
+    parts = P.split_pdus(data)
+    if len(parts) != 1:
+        raise P.ProtocolError("Genau eine Probe-Request-PDU erwartet")
+    pdu, header = parts[0]
+    payload = pdu[header + 1:]
+    if pdu[header] != C.VECTOR_PROBE_REQUEST_DATA or len(payload) < 14 or (len(payload) - 14) % 6:
+        raise P.ProtocolError("Probe Request ungültig")
+    known = [Uid.from_bytes(bytes(payload[i:i + 6])) for i in range(14, len(payload), 6)]
+    return ProbeRequest(Uid.from_bytes(bytes(payload[:6])), Uid.from_bytes(bytes(payload[6:12])),
+                        struct.unpack(">H", payload[12:14])[0], known)
+
+
+@dataclass
+class ProbeReply:
     uid: Uid
     hardware: bytes  # 6 Byte, meist MAC-Adresse
-    typ: int
+    type: int
 
 
-def baue_probe_antwort(a: ProbeAntwort) -> bytes:
-    nutz = a.uid.als_bytes() + a.hardware[:6].rjust(6, b"\x00") + bytes((a.typ,))
-    return P.flags_laenge(4 + len(nutz)) + bytes((K.VECTOR_PROBE_REPLY_DATA,)) + nutz
+def build_probe_reply(a: ProbeReply) -> bytes:
+    payload = a.uid.to_bytes() + a.hardware[:6].rjust(6, b"\x00") + bytes((a.type,))
+    return P.flags_length(4 + len(payload)) + bytes((C.VECTOR_PROBE_REPLY_DATA,)) + payload
 
 
-def lese_probe_antwort(daten: bytes) -> ProbeAntwort:
-    teile = P.pdus_aufteilen(daten)
-    if len(teile) != 1:
-        raise P.ProtokollFehler("Genau eine Probe-Reply-PDU erwartet")
-    pdu, kopf = teile[0]
-    nutz = pdu[kopf + 1:]
-    if pdu[kopf] != K.VECTOR_PROBE_REPLY_DATA or len(nutz) != 13:
-        raise P.ProtokollFehler("Probe Reply ungültig")
-    return ProbeAntwort(Uid.aus_bytes(bytes(nutz[:6])), bytes(nutz[6:12]), nutz[12])
+def read_probe_reply(data: bytes) -> ProbeReply:
+    parts = P.split_pdus(data)
+    if len(parts) != 1:
+        raise P.ProtocolError("Genau eine Probe-Reply-PDU erwartet")
+    pdu, header = parts[0]
+    payload = pdu[header + 1:]
+    if pdu[header] != C.VECTOR_PROBE_REPLY_DATA or len(payload) != 13:
+        raise P.ProtocolError("Probe Reply ungültig")
+    return ProbeReply(Uid.from_bytes(bytes(payload[:6])), bytes(payload[6:12]), payload[12])
 
 
-def lese_rdm_cmd(daten: bytes) -> bytes:
+def read_rdm_cmd(data: bytes) -> bytes:
     """RDM Command PDU (5.4.2.3) -> rohe RDM-Nachricht inkl. Startcode."""
-    teile = P.pdus_aufteilen(daten)
-    if len(teile) != 1:
-        raise P.ProtokollFehler("Genau eine RDM-Command-PDU erwartet")
-    pdu, kopf = teile[0]
-    if len(pdu) <= kopf or pdu[kopf] != K.VECTOR_RDM_CMD_RDM_DATA:
-        raise P.ProtokollFehler("RDM-Command-PDU mit falschem Vektor")
-    return bytes(pdu[kopf:])
+    parts = P.split_pdus(data)
+    if len(parts) != 1:
+        raise P.ProtocolError("Genau eine RDM-Command-PDU erwartet")
+    pdu, header = parts[0]
+    if len(pdu) <= header or pdu[header] != C.VECTOR_RDM_CMD_RDM_DATA:
+        raise P.ProtocolError("RDM-Command-PDU mit falschem Vektor")
+    return bytes(pdu[header:])
 
 
-def hardware_adresse() -> bytes:
+def hardware_address() -> bytes:
     return uuid.getnode().to_bytes(6, "big")
 
 
 # ------------------------------------------------------------------- Transport
 @dataclass
-class LlrpNetz:
+class LlrpNetwork:
     """Adressen für LLRP. Standard: Multicast nach E1.33; Tests nutzen Unicast auf 127.0.0.1."""
 
     adapter: str = "0.0.0.0"  # IP des Netzwerkadapters (0.0.0.0 = Standard des Systems)
-    anfrage_ziel: str = K.LLRP_IPV4_ANFRAGE
-    antwort_ziel: str = K.LLRP_IPV4_ANTWORT
-    anfrage_port: int = K.LLRP_PORT
-    antwort_port: int = K.LLRP_PORT
+    request_addr: str = C.LLRP_IPV4_REQUEST
+    response_addr: str = C.LLRP_IPV4_RESPONSE
+    request_port: int = C.LLRP_PORT
+    response_port: int = C.LLRP_PORT
     multicast: bool = True
     ttl: int = 1  # >1: Antworten können aus anderen Netzsegmenten kommen (E1.33 5.3.3)
 
 
-def _udp_socket(netz: LlrpNetz, port: int, gruppe: str) -> socket.socket:
+def _udp_socket(network: LlrpNetwork, port: int, group: str) -> socket.socket:
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     if hasattr(socket, "SO_REUSEPORT"):
@@ -165,14 +165,14 @@ def _udp_socket(netz: LlrpNetz, port: int, gruppe: str) -> socket.socket:
         except OSError:
             pass
     try:
-        if netz.multicast:
+        if network.multicast:
             s.bind(("", port))
-            mreq = socket.inet_aton(gruppe) + socket.inet_aton(netz.adapter)
+            mreq = socket.inet_aton(group) + socket.inet_aton(network.adapter)
             s.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-            s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, netz.ttl)
+            s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, network.ttl)
             s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
-            if netz.adapter != "0.0.0.0":
-                s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(netz.adapter))
+            if network.adapter != "0.0.0.0":
+                s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(network.adapter))
             multicast_all = getattr(socket, "IP_MULTICAST_ALL", 49 if sys.platform.startswith("linux") else None)
             if multicast_all is not None:
                 try:  # Linux: nur Gruppen empfangen, die dieser Socket abonniert hat
@@ -180,7 +180,7 @@ def _udp_socket(netz: LlrpNetz, port: int, gruppe: str) -> socket.socket:
                 except OSError:
                     pass
         else:
-            s.bind((netz.adapter, port))
+            s.bind((network.adapter, port))
     except OSError:
         s.close()
         raise
@@ -188,36 +188,36 @@ def _udp_socket(netz: LlrpNetz, port: int, gruppe: str) -> socket.socket:
     return s
 
 
-class _Protokoll(asyncio.DatagramProtocol):
-    def __init__(self, empfang: Callable[[bytes, tuple], None]):
-        self.empfang = empfang
+class _Protocol(asyncio.DatagramProtocol):
+    def __init__(self, on_receive: Callable[[bytes, tuple], None]):
+        self.on_receive = on_receive
 
     def datagram_received(self, data: bytes, addr: tuple) -> None:
         try:
-            self.empfang(data, addr)
+            self.on_receive(data, addr)
         except Exception:  # ein fehlerhaftes Paket darf den Empfang nicht beenden
             log.exception("LLRP-Paket konnte nicht verarbeitet werden")
 
 
-async def _endpunkt(sock: socket.socket, empfang) -> asyncio.DatagramTransport:
-    transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(lambda: _Protokoll(empfang), sock=sock)
+async def _endpoint(sock: socket.socket, on_receive) -> asyncio.DatagramTransport:
+    transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(lambda: _Protocol(on_receive), sock=sock)
     return transport
 
 
 # ------------------------------------------------------------------- Manager
 @dataclass(frozen=True)
-class LlrpZiel:
+class DiscoveredTarget:
     """Ein per LLRP gefundenes Target. UID allein ist nicht eindeutig (dynamische UIDs), daher mit CID."""
 
     cid: uuid.UUID
     uid: Uid
     hardware: bytes
-    typ: int
-    adresse: str  # IP, von der die Antwort kam
+    type: int
+    address: str  # IP, von der die Antwort kam
 
     @property
-    def typ_text(self) -> str:
-        return K.LLRP_TYP_TEXT.get(self.typ, f"Typ {self.typ:#04x}")
+    def type_text(self) -> str:
+        return C.LLRP_TYPE_TEXT.get(self.type, f"Typ {self.type:#04x}")
 
     @property
     def hardware_text(self) -> str:
@@ -232,207 +232,207 @@ class LlrpManager:
             print(await m.scope_lesen(ziele[0]))
     """
 
-    def __init__(self, netz: LlrpNetz | None = None, uid: Uid | None = None, cid: uuid.UUID | None = None,
-                 zeitlimit_s: float = K.LLRP_TIMEOUT_S, wiederholungen: int = 1):
-        self.netz = netz or LlrpNetz()
+    def __init__(self, network: LlrpNetwork | None = None, uid: Uid | None = None, cid: uuid.UUID | None = None,
+                 timeout_window_s: float = C.LLRP_TIMEOUT_S, retries: int = 1):
+        self.network = network or LlrpNetwork()
         # E1.33 5.6.1: Manager-UID darf dynamisch sein; sie wird nur in RDM-Befehlen verwendet
-        self.uid = uid or Uid(0x8000 | K.ESTA_PROTOTYP_HERSTELLER, 0x4C4C5250)  # „LLRP“
+        self.uid = uid or Uid(0x8000 | C.ESTA_PROTOTYPE_MANUFACTURER, 0x4C4C5250)  # „LLRP“
         self.cid = cid or uuid.uuid4()
-        self.zeitlimit_s = zeitlimit_s
-        self.wiederholungen = wiederholungen
-        self.schreibfreigabe = False
-        self.protokoll: list[dict] = []  # Änderungen alt -> neu
+        self.timeout_window_s = timeout_window_s
+        self.retries = retries
+        self.write_enabled = False
+        self.protocol: list[dict] = []  # Änderungen alt -> neu
         self._tn = 0
-        self._rdm_tn = TransaktionsZaehler()
+        self._rdm_tn = TransactionCounter()
         self._transport: asyncio.DatagramTransport | None = None
         self._probe: tuple[int, dict] | None = None  # (Transaktion, {(cid, uid): LlrpZiel})
-        self._offen: dict[int, asyncio.Future] = {}
+        self._pending: dict[int, asyncio.Future] = {}
 
-    async def starten(self) -> None:
-        sock = _udp_socket(self.netz, self.netz.antwort_port, self.netz.antwort_ziel)
-        self._transport = await _endpunkt(sock, self._empfangen)
+    async def start(self) -> None:
+        sock = _udp_socket(self.network, self.network.response_port, self.network.response_addr)
+        self._transport = await _endpoint(sock, self._on_datagram)
 
-    async def stoppen(self) -> None:
+    async def stop(self) -> None:
         if self._transport:
             self._transport.close()
             self._transport = None
 
     async def __aenter__(self) -> "LlrpManager":
-        await self.starten()
+        await self.start()
         return self
 
     async def __aexit__(self, *_exc) -> None:
-        await self.stoppen()
+        await self.stop()
 
     # --- Senden/Empfangen
-    def _naechste_tn(self) -> int:
+    def _next_tn(self) -> int:
         self._tn = (self._tn + 1) & 0xFFFFFFFF
         return self._tn
 
-    def _senden(self, vektor: int, ziel_cid: uuid.UUID, daten: bytes) -> int:
+    def _send(self, vector: int, dest_cid: uuid.UUID, data: bytes) -> int:
         if self._transport is None:
             raise RuntimeError("LLRP-Manager nicht gestartet")
-        tn = self._naechste_tn()
-        self._transport.sendto(baue_llrp(self.cid, vektor, ziel_cid, tn, daten),
-                               (self.netz.anfrage_ziel, self.netz.anfrage_port))
+        tn = self._next_tn()
+        self._transport.sendto(build_llrp(self.cid, vector, dest_cid, tn, data),
+                               (self.network.request_addr, self.network.request_port))
         return tn
 
-    def _empfangen(self, data: bytes, addr: tuple) -> None:
+    def _on_datagram(self, data: bytes, addr: tuple) -> None:
         try:
-            p = lese_llrp(data)
-        except P.ProtokollFehler:
+            p = read_llrp(data)
+        except P.ProtocolError:
             return
-        if p.ziel_cid != self.cid:  # E1.33 5.6.2
+        if p.dest_cid != self.cid:  # E1.33 5.6.2
             return
-        if p.vektor == K.VECTOR_LLRP_PROBE_REPLY and self._probe and self._probe[0] == p.transaktion:
+        if p.vector == C.VECTOR_LLRP_PROBE_REPLY and self._probe and self._probe[0] == p.transaction:
             try:
-                a = lese_probe_antwort(p.daten)
-            except P.ProtokollFehler:
+                a = read_probe_reply(p.data)
+            except P.ProtocolError:
                 return
-            self._probe[1][(p.sender_cid, a.uid)] = LlrpZiel(p.sender_cid, a.uid, a.hardware, a.typ, addr[0])
-        elif p.vektor == K.VECTOR_LLRP_RDM_CMD:
-            f = self._offen.get(p.transaktion)
+            self._probe[1][(p.sender_cid, a.uid)] = DiscoveredTarget(p.sender_cid, a.uid, a.hardware, a.type, addr[0])
+        elif p.vector == C.VECTOR_LLRP_RDM_CMD:
+            f = self._pending.get(p.transaction)
             if f and not f.done():
                 try:
-                    f.set_result((p.sender_cid, lese_rdm_cmd(p.daten)))
-                except P.ProtokollFehler as fehler:
-                    f.set_exception(RdmAntwortFehler(f"LLRP-Antwort ungültig: {fehler}"))
+                    f.set_result((p.sender_cid, read_rdm_cmd(p.data)))
+                except P.ProtocolError as error:
+                    f.set_exception(RdmResponseError(f"LLRP-Antwort ungültig: {error}"))
 
     # --- Discovery (E1.33 5.6.3)
-    async def entdecken(self, filter: int = K.LLRP_FILTER_NUR_UNVERBUNDEN) -> list[LlrpZiel]:
+    async def discover(self, filter: int = C.LLRP_FILTER_CLIENT_CONN_INACTIVE) -> list[DiscoveredTarget]:
         """Sucht Targets. Standard-Filter nach Norm: nur Clients ohne Broker-Verbindung
         (Broker antworten immer). ``filter=0`` findet auch verbundene Clients."""
-        gefunden: dict[tuple[uuid.UUID, Uid], LlrpZiel] = {}
-        await self._bereich(UID_MIN, UID_MAX, filter, gefunden)
-        return sorted(gefunden.values(), key=lambda z: (z.uid, str(z.cid)))
+        found: dict[tuple[uuid.UUID, Uid], DiscoveredTarget] = {}
+        await self._probe_range(UID_MIN, UID_MAX, filter, found)
+        return sorted(found.values(), key=lambda z: (z.uid, str(z.cid)))
 
-    async def _bereich(self, unten: int, oben: int, filter: int, gefunden: dict) -> None:
-        stille = 0
+    async def _probe_range(self, lo: int, hi: int, filter: int, found: dict) -> None:
+        silent_rounds = 0
         while True:
-            bekannt = sorted({z.uid for z in gefunden.values() if unten <= z.uid.als_int() <= oben})
-            if len(bekannt) > K.LLRP_KNOWN_UID_SIZE:  # Schritt 1: Bereich teilen
-                mitte = (unten + oben) // 2
-                await self._bereich(unten, mitte, filter, gefunden)
-                await self._bereich(mitte + 1, oben, filter, gefunden)
+            known = sorted({z.uid for z in found.values() if lo <= z.uid.to_int() <= hi})
+            if len(known) > C.LLRP_KNOWN_UID_SIZE:  # Schritt 1: Bereich teilen
+                middle = (lo + hi) // 2
+                await self._probe_range(lo, middle, filter, found)
+                await self._probe_range(middle + 1, hi, filter, found)
                 return
-            neu: dict = {}
-            anfrage = ProbeAnfrage(Uid.aus_int(unten), Uid.aus_int(oben), filter, bekannt)
-            self._probe = (self._senden(K.VECTOR_LLRP_PROBE_REQUEST, BROADCAST_CID, baue_probe_anfrage(anfrage)), neu)
-            await asyncio.sleep(self.zeitlimit_s)  # Schritt 3: LLRP_TIMEOUT abwarten
+            new: dict = {}
+            request = ProbeRequest(Uid.from_int(lo), Uid.from_int(hi), filter, known)
+            self._probe = (self._send(C.VECTOR_LLRP_PROBE_REQUEST, BROADCAST_CID, build_probe_request(request)), new)
+            await asyncio.sleep(self.timeout_window_s)  # Schritt 3: LLRP_TIMEOUT abwarten
             self._probe = None
-            frisch = {k: v for k, v in neu.items() if k not in gefunden}
-            gefunden.update(neu)
-            if frisch:
-                stille = 0  # Schritt 4
+            fresh = {k: v for k, v in new.items() if k not in found}
+            found.update(new)
+            if fresh:
+                silent_rounds = 0  # Schritt 4
                 continue
-            stille += 1  # Schritt 5: zwei weitere Versuche ohne Antwort
-            if stille >= 3:
+            silent_rounds += 1  # Schritt 5: zwei weitere Versuche ohne Antwort
+            if silent_rounds >= 3:
                 return
 
     # --- RDM über LLRP
-    async def rdm_get(self, ziel: LlrpZiel, pid: int, daten: bytes = b"") -> bytes:
-        return await self._rdm(ziel, K.CC_GET, pid, daten)
+    async def rdm_get(self, target: DiscoveredTarget, pid: int, data: bytes = b"") -> bytes:
+        return await self._rdm(target, C.CC_GET, pid, data)
 
-    async def rdm_set(self, ziel: LlrpZiel, pid: int, daten: bytes) -> bytes:
-        if pid not in ERLAUBTE_SET_PIDS:
-            raise SchreibSperreFehler(f"SET für {K.PID_NAMEN.get(pid, hex(pid))} über LLRP nicht freigegeben")
-        if not self.schreibfreigabe:
-            raise SchreibSperreFehler("Keine Schreibfreigabe für diese Sitzung")
-        return await self._rdm(ziel, K.CC_SET, pid, daten)
+    async def rdm_set(self, target: DiscoveredTarget, pid: int, data: bytes) -> bytes:
+        if pid not in ALLOWED_SET_PIDS:
+            raise WriteLockError(f"SET für {C.PID_NAMES.get(pid, hex(pid))} über LLRP nicht freigegeben")
+        if not self.write_enabled:
+            raise WriteLockError("Keine Schreibfreigabe für diese Sitzung")
+        return await self._rdm(target, C.CC_SET, pid, data)
 
-    async def _rdm(self, ziel: LlrpZiel, cc: int, pid: int, daten: bytes) -> bytes:
-        anfrage = RdmNachricht(ziel=ziel.uid, quelle=self.uid, transaktion=self._rdm_tn.naechste(ziel.uid),
-                               port_oder_antworttyp=1, command_class=cc, pid=pid, daten=daten)
-        roh = P.baue_rdm_cmd_pdu(anfrage.kodieren())
-        for versuch in range(self.wiederholungen + 1):
+    async def _rdm(self, target: DiscoveredTarget, cc: int, pid: int, data: bytes) -> bytes:
+        request = RdmMessage(dest=target.uid, source=self.uid, transaction=self._rdm_tn.next_tn(target.uid),
+                               port_or_response_type=1, command_class=cc, pid=pid, data=data)
+        raw = P.build_rdm_cmd_pdu(request.encode())
+        for attempt in range(self.retries + 1):
             fut = asyncio.get_running_loop().create_future()
-            tn = self._senden(K.VECTOR_LLRP_RDM_CMD, ziel.cid, roh)
-            self._offen[tn] = fut
+            tn = self._send(C.VECTOR_LLRP_RDM_CMD, target.cid, raw)
+            self._pending[tn] = fut
             try:
-                sender, antwort_roh = await asyncio.wait_for(fut, self.zeitlimit_s)
+                sender, response_raw = await asyncio.wait_for(fut, self.timeout_window_s)
                 break
             except asyncio.TimeoutError:
-                if versuch == self.wiederholungen:
-                    raise RdmZeitFehler(f"Keine LLRP-Antwort auf {K.PID_NAMEN.get(pid, hex(pid))} "
-                                        f"von {ziel.uid}") from None
+                if attempt == self.retries:
+                    raise RdmTimeoutError(f"Keine LLRP-Antwort auf {C.PID_NAMES.get(pid, hex(pid))} "
+                                        f"von {target.uid}") from None
             finally:
-                self._offen.pop(tn, None)
+                self._pending.pop(tn, None)
         try:
-            n = RdmNachricht.dekodieren(antwort_roh)
-        except RdmFormatFehler as fehler:
-            raise RdmAntwortFehler(f"RDM-Antwort ungültig: {fehler}") from fehler
-        soll_cc = K.CC_GET_RESPONSE if cc == K.CC_GET else K.CC_SET_RESPONSE
-        if sender != ziel.cid or n.quelle != ziel.uid or n.pid != pid or n.command_class != soll_cc \
-                or n.transaktion != anfrage.transaktion:
-            raise RdmAntwortFehler(f"LLRP-Antwort passt nicht zur Anfrage (PID {n.pid:#06x})")
-        if n.antworttyp == K.ANTWORT_ACK:
-            return n.daten
-        if n.antworttyp == K.ANTWORT_NACK:
-            grund = int.from_bytes(n.daten[:2], "big") if len(n.daten) >= 2 else 0xFFFF
-            raise RdmNackFehler(pid, grund)
-        raise RdmAntwortFehler(f"Antworttyp {n.antworttyp} ist über LLRP unzulässig")
+            n = RdmMessage.decode(response_raw)
+        except RdmFormatError as error:
+            raise RdmResponseError(f"RDM-Antwort ungültig: {error}") from error
+        expected_cc = C.CC_GET_RESPONSE if cc == C.CC_GET else C.CC_SET_RESPONSE
+        if sender != target.cid or n.source != target.uid or n.pid != pid or n.command_class != expected_cc \
+                or n.transaction != request.transaction:
+            raise RdmResponseError(f"LLRP-Antwort passt nicht zur Anfrage (PID {n.pid:#06x})")
+        if n.response_type == C.RESPONSE_ACK:
+            return n.data
+        if n.response_type == C.RESPONSE_NACK:
+            reason = int.from_bytes(n.data[:2], "big") if len(n.data) >= 2 else 0xFFFF
+            raise RdmNackError(pid, reason)
+        raise RdmResponseError(f"Antworttyp {n.response_type} ist über LLRP unzulässig")
 
     # --- Komfort: Scope und Suchdomäne
-    async def scope_lesen(self, ziel: LlrpZiel) -> R.ComponentScope:
-        return R.lese_component_scope(await self.rdm_get(ziel, K.PID_COMPONENT_SCOPE, struct.pack(">H", 1)))
+    async def read_scope(self, target: DiscoveredTarget) -> R.ComponentScope:
+        return R.read_component_scope(await self.rdm_get(target, C.PID_COMPONENT_SCOPE, struct.pack(">H", 1)))
 
-    async def suchdomain_lesen(self, ziel: LlrpZiel) -> str:
-        return R.lese_suchdomain(await self.rdm_get(ziel, K.PID_SEARCH_DOMAIN))
+    async def read_search_domain(self, target: DiscoveredTarget) -> str:
+        return R.read_search_domain(await self.rdm_get(target, C.PID_SEARCH_DOMAIN))
 
-    async def scope_setzen(self, ziel: LlrpZiel, scope: str,
-                           statischer_broker: tuple[str, int] | None = None) -> tuple[R.ComponentScope, R.ComponentScope]:
+    async def set_scope(self, target: DiscoveredTarget, scope: str,
+                           static_broker: tuple[str, int] | None = None) -> tuple[R.ComponentScope, R.ComponentScope]:
         """Setzt Scope (Slot 1) und optional eine statische IPv4-Broker-Adresse; liest zurück.
 
         Ohne ``statischer_broker`` sucht das Gerät den Broker per mDNS. Achtung: Ein
         verbundenes Gerät trennt sich bei Scopewechsel vom Broker.
         """
         raw = scope.encode("utf-8")
-        if not 1 <= len(raw) <= K.E133_SCOPE_LAENGE - 1:
-            raise ValueError(f"Scope muss 1 bis {K.E133_SCOPE_LAENGE - 1} Byte lang sein")
-        alt = await self.scope_lesen(ziel)
-        neu = R.ComponentScope(1, scope)
-        if statischer_broker:
-            neu.statisch_typ = K.E133_STATISCHE_KONFIG_IPV4
-            neu.statisch_ipv4, neu.statisch_port = statischer_broker
-        await self.rdm_set(ziel, K.PID_COMPONENT_SCOPE, R.baue_component_scope(neu))
-        gelesen = await self.scope_lesen(ziel)
-        self._protokollieren(ziel, "COMPONENT_SCOPE", (alt.scope, alt.statische_adresse),
-                             (gelesen.scope, gelesen.statische_adresse))
-        if (gelesen.scope, gelesen.statische_adresse) != (neu.scope, neu.statische_adresse):
-            raise RdmAntwortFehler(f"Rücklesen weicht ab: {gelesen.scope!r} / {gelesen.statische_adresse}")
-        return alt, gelesen
+        if not 1 <= len(raw) <= C.E133_SCOPE_LENGTH - 1:
+            raise ValueError(f"Scope muss 1 bis {C.E133_SCOPE_LENGTH - 1} Byte lang sein")
+        old = await self.read_scope(target)
+        new = R.ComponentScope(1, scope)
+        if static_broker:
+            new.static_type = C.E133_STATIC_CONFIG_IPV4
+            new.static_ipv4, new.static_port = static_broker
+        await self.rdm_set(target, C.PID_COMPONENT_SCOPE, R.build_component_scope(new))
+        read_back = await self.read_scope(target)
+        self._log_change(target, "COMPONENT_SCOPE", (old.scope, old.static_address),
+                             (read_back.scope, read_back.static_address))
+        if (read_back.scope, read_back.static_address) != (new.scope, new.static_address):
+            raise RdmResponseError(f"Rücklesen weicht ab: {read_back.scope!r} / {read_back.static_address}")
+        return old, read_back
 
-    async def suchdomain_setzen(self, ziel: LlrpZiel, domain: str) -> tuple[str, str]:
-        alt = await self.suchdomain_lesen(ziel)
-        await self.rdm_set(ziel, K.PID_SEARCH_DOMAIN, domain.encode("utf-8")[:K.E133_DOMAIN_LAENGE])
-        gelesen = await self.suchdomain_lesen(ziel)
-        self._protokollieren(ziel, "SEARCH_DOMAIN", alt, gelesen)
-        if gelesen != domain:
-            raise RdmAntwortFehler(f"Rücklesen weicht ab: {gelesen!r}")
-        return alt, gelesen
+    async def set_search_domain(self, target: DiscoveredTarget, domain: str) -> tuple[str, str]:
+        old = await self.read_search_domain(target)
+        await self.rdm_set(target, C.PID_SEARCH_DOMAIN, domain.encode("utf-8")[:C.E133_DOMAIN_LENGTH])
+        read_back = await self.read_search_domain(target)
+        self._log_change(target, "SEARCH_DOMAIN", old, read_back)
+        if read_back != domain:
+            raise RdmResponseError(f"Rücklesen weicht ab: {read_back!r}")
+        return old, read_back
 
-    def _protokollieren(self, ziel: LlrpZiel, parameter: str, alt, neu) -> None:
-        eintrag = {"uid": str(ziel.uid), "cid": str(ziel.cid), "parameter": parameter, "alt": alt, "neu": neu}
-        self.protokoll.append(eintrag)
-        log.info("LLRP SET %s", eintrag)
+    def _log_change(self, target: DiscoveredTarget, parameter: str, old, new) -> None:
+        entry = {"uid": str(target.uid), "cid": str(target.cid), "parameter": parameter, "old": old, "new": new}
+        self.protocol.append(entry)
+        log.info("LLRP SET %s", entry)
 
 
 # ------------------------------------------------------------------- Target
 class LlrpTarget:
     """LLRP-Target (E1.33 5.7). ``responder`` beantwortet RDM-Anfragen (z. B. BrokerResponder)."""
 
-    def __init__(self, uid: Callable[[], Uid] | Uid, cid: uuid.UUID, typ: int,
-                 responder: Callable[[RdmNachricht], RdmNachricht | None],
-                 netz: LlrpNetz | None = None, verbunden: Callable[[], bool] | None = None,
-                 max_backoff_s: float = K.LLRP_MAX_BACKOFF_S):
+    def __init__(self, uid: Callable[[], Uid] | Uid, cid: uuid.UUID, type: int,
+                 responder: Callable[[RdmMessage], RdmMessage | None],
+                 network: LlrpNetwork | None = None, connected: Callable[[], bool] | None = None,
+                 max_backoff_s: float = C.LLRP_MAX_BACKOFF_S):
         self._uid = uid if callable(uid) else (lambda: uid)
         self.cid = cid
-        self.typ = typ
+        self.type = type
         self.responder = responder
-        self.netz = netz or LlrpNetz()
-        self.verbunden = verbunden or (lambda: False)
+        self.network = network or LlrpNetwork()
+        self.connected = connected or (lambda: False)
         self.max_backoff_s = max_backoff_s
-        self.zaehler = {"probe": 0, "probe_antwort": 0, "rdm": 0}
+        self.counters = {"probe": 0, "probe_reply": 0, "rdm": 0}
         self._transport: asyncio.DatagramTransport | None = None
         self._tasks: set[asyncio.Task] = set()
 
@@ -440,141 +440,141 @@ class LlrpTarget:
     def uid(self) -> Uid:
         return self._uid()
 
-    async def starten(self) -> None:
-        sock = _udp_socket(self.netz, self.netz.anfrage_port, self.netz.anfrage_ziel)
-        self._transport = await _endpunkt(sock, self._empfangen)
+    async def start(self) -> None:
+        sock = _udp_socket(self.network, self.network.request_port, self.network.request_addr)
+        self._transport = await _endpoint(sock, self._on_datagram)
 
-    async def stoppen(self) -> None:
+    async def stop(self) -> None:
         for t in list(self._tasks):
             t.cancel()
         if self._transport:
             self._transport.close()
             self._transport = None
 
-    def _antworten(self, ziel_cid: uuid.UUID, vektor: int, tn: int, daten: bytes) -> None:
+    def _reply(self, dest_cid: uuid.UUID, vector: int, tn: int, data: bytes) -> None:
         if self._transport:
-            self._transport.sendto(baue_llrp(self.cid, vektor, ziel_cid, tn, daten),
-                                   (self.netz.antwort_ziel, self.netz.antwort_port))
+            self._transport.sendto(build_llrp(self.cid, vector, dest_cid, tn, data),
+                                   (self.network.response_addr, self.network.response_port))
 
-    def _empfangen(self, data: bytes, _addr: tuple) -> None:
+    def _on_datagram(self, data: bytes, _addr: tuple) -> None:
         try:
-            p = lese_llrp(data)
-        except P.ProtokollFehler:
+            p = read_llrp(data)
+        except P.ProtocolError:
             return
-        if p.ziel_cid not in (BROADCAST_CID, self.cid):  # E1.33 5.7.2
+        if p.dest_cid not in (BROADCAST_CID, self.cid):  # E1.33 5.7.2
             return
-        if p.vektor == K.VECTOR_LLRP_PROBE_REQUEST:
+        if p.vector == C.VECTOR_LLRP_PROBE_REQUEST:
             self._probe(p)
-        elif p.vektor == K.VECTOR_LLRP_RDM_CMD:
+        elif p.vector == C.VECTOR_LLRP_RDM_CMD:
             self._rdm(p)
 
-    def _probe(self, p: LlrpPaket) -> None:
+    def _probe(self, p: LlrpPacket) -> None:
         try:
-            a = lese_probe_anfrage(p.daten)
-        except P.ProtokollFehler:
+            a = read_probe_request(p.data)
+        except P.ProtocolError:
             return
-        self.zaehler["probe"] += 1
+        self.counters["probe"] += 1
         uid = self.uid
-        if not a.untere <= uid <= a.obere or uid in a.bekannte:
+        if not a.lower <= uid <= a.upper or uid in a.known:
             return
-        ist_broker = self.typ == K.LLRP_TYP_BROKER
-        if a.filter & K.LLRP_FILTER_NUR_BROKER and not ist_broker:
+        is_broker = self.type == C.LLRP_TYPE_BROKER
+        if a.filter & C.LLRP_FILTER_BROKERS_ONLY and not is_broker:
             return
-        if (a.filter & K.LLRP_FILTER_NUR_UNVERBUNDEN and not ist_broker
-                and self.typ != K.LLRP_TYP_KEIN_RDMNET and self.verbunden()):
+        if (a.filter & C.LLRP_FILTER_CLIENT_CONN_INACTIVE and not is_broker
+                and self.type != C.LLRP_TYPE_NON_RDMNET and self.connected()):
             return
-        antwort = baue_probe_antwort(ProbeAntwort(uid, hardware_adresse(), self.typ))
+        response = build_probe_reply(ProbeReply(uid, hardware_address(), self.type))
 
-        async def verzoegert():  # E1.33 5.7.3: zufällige Wartezeit 0 … LLRP_MAX_BACKOFF
+        async def delayed():  # E1.33 5.7.3: zufällige Wartezeit 0 … LLRP_MAX_BACKOFF
             await asyncio.sleep(random.uniform(0, self.max_backoff_s))
-            self.zaehler["probe_antwort"] += 1
-            self._antworten(p.sender_cid, K.VECTOR_LLRP_PROBE_REPLY, p.transaktion, antwort)
+            self.counters["probe_reply"] += 1
+            self._reply(p.sender_cid, C.VECTOR_LLRP_PROBE_REPLY, p.transaction, response)
 
-        t = asyncio.ensure_future(verzoegert())
+        t = asyncio.ensure_future(delayed())
         self._tasks.add(t)
         t.add_done_callback(self._tasks.discard)
 
-    def _rdm(self, p: LlrpPaket) -> None:
+    def _rdm(self, p: LlrpPacket) -> None:
         try:
-            anfrage = RdmNachricht.dekodieren(lese_rdm_cmd(p.daten))
-        except (P.ProtokollFehler, RdmFormatFehler):
+            request = RdmMessage.decode(read_rdm_cmd(p.data))
+        except (P.ProtocolError, RdmFormatError):
             return
-        if anfrage.ziel != self.uid and not anfrage.ziel.ist_broadcast:  # E1.33 5.7.4
+        if request.dest != self.uid and not request.dest.is_broadcast:  # E1.33 5.7.4
             return
-        if anfrage.command_class not in (K.CC_GET, K.CC_SET):
+        if request.command_class not in (C.CC_GET, C.CC_SET):
             return
-        self.zaehler["rdm"] += 1
-        if anfrage.subdevice not in (K.RDM_ROOT_DEVICE, 0xFFFF):
-            antwort = anfrage.antwort(K.ANTWORT_NACK, struct.pack(">H", K.NR_SUB_DEVICE_OUT_OF_RANGE))
+        self.counters["rdm"] += 1
+        if request.subdevice not in (C.RDM_ROOT_DEVICE, 0xFFFF):
+            response = request.response(C.RESPONSE_NACK, struct.pack(">H", C.NR_SUB_DEVICE_OUT_OF_RANGE))
         else:
-            antwort = self.responder(anfrage)
-        if antwort is None or anfrage.ziel.ist_broadcast:
+            response = self.responder(request)
+        if response is None or request.dest.is_broadcast:
             return
-        if antwort.antworttyp in (K.ANTWORT_ACK_TIMER, K.ANTWORT_ACK_OVERFLOW):  # E1.33 5.7.2
-            antwort = anfrage.antwort(K.ANTWORT_NACK, struct.pack(">H", K.NR_ACTION_NOT_SUPPORTED))
-        self._antworten(p.sender_cid, K.VECTOR_LLRP_RDM_CMD, p.transaktion, P.baue_rdm_cmd_pdu(antwort.kodieren()))
+        if response.response_type in (C.RESPONSE_ACK_TIMER, C.RESPONSE_ACK_OVERFLOW):  # E1.33 5.7.2
+            response = request.response(C.RESPONSE_NACK, struct.pack(">H", C.NR_ACTION_NOT_SUPPORTED))
+        self._reply(p.sender_cid, C.VECTOR_LLRP_RDM_CMD, p.transaction, P.build_rdm_cmd_pdu(response.encode()))
 
 
 # ------------------------------------------------------------------- einfacher Komponenten-Responder
-class KomponentenResponder:
+class ComponentResponder:
     """RDM-Responder für LLRP-Targets von Geräten/Controllern (Simulator, Tests).
 
     Unterstützt DEVICE_INFO, Labels, IDENTIFY_DEVICE sowie COMPONENT_SCOPE und
     SEARCH_DOMAIN (GET/SET). ``bei_aenderung(pid)`` wird nach einem SET aufgerufen.
     """
 
-    def __init__(self, uid: Uid, scope: str = K.E133_STANDARD_SCOPE, domain: str = K.E133_STANDARD_DOMAIN,
-                 modell: str = "pyrdmnet LLRP", produktkategorie: int = 0x0100,
-                 bei_aenderung: Callable[[int], None] | None = None):
+    def __init__(self, uid: Uid, scope: str = C.E133_DEFAULT_SCOPE, domain: str = C.E133_DEFAULT_DOMAIN,
+                 model: str = "pyrdmnet LLRP", product_category: int = 0x0100,
+                 on_change: Callable[[int], None] | None = None):
         self.uid = uid
         self.scope = R.ComponentScope(1, scope)
         self.domain = domain
-        self.modell = modell
-        self.produktkategorie = produktkategorie
-        self.identifizieren = False
-        self.bei_aenderung = bei_aenderung or (lambda pid: None)
+        self.model = model
+        self.product_category = product_category
+        self.identifying = False
+        self.on_change = on_change or (lambda pid: None)
 
-    def __call__(self, a: RdmNachricht) -> RdmNachricht | None:
-        nack = lambda g: a.antwort(K.ANTWORT_NACK, struct.pack(">H", g))  # noqa: E731
-        pid, d = a.pid, a.daten
-        if a.command_class == K.CC_GET:
-            if pid == K.PID_DEVICE_INFO:
-                return a.antwort(K.ANTWORT_ACK, R.baue_device_info(R.DeviceInfo(
-                    0x0100, 1, self.produktkategorie, 1, 0, 0, 0, 0xFFFF, 0, 0)))
-            if pid in (K.PID_DEVICE_MODEL_DESCRIPTION, K.PID_DEVICE_LABEL):
-                return a.antwort(K.ANTWORT_ACK, R.baue_text(self.modell))
-            if pid == K.PID_MANUFACTURER_LABEL:
-                return a.antwort(K.ANTWORT_ACK, R.baue_text("pyrdmnet Simulator"))
-            if pid == K.PID_IDENTIFY_DEVICE:
-                return a.antwort(K.ANTWORT_ACK, bytes((int(self.identifizieren),)))
-            if pid == K.PID_COMPONENT_SCOPE:
+    def __call__(self, a: RdmMessage) -> RdmMessage | None:
+        nack = lambda g: a.response(C.RESPONSE_NACK, struct.pack(">H", g))  # noqa: E731
+        pid, d = a.pid, a.data
+        if a.command_class == C.CC_GET:
+            if pid == C.PID_DEVICE_INFO:
+                return a.response(C.RESPONSE_ACK, R.build_device_info(R.DeviceInfo(
+                    0x0100, 1, self.product_category, 1, 0, 0, 0, 0xFFFF, 0, 0)))
+            if pid in (C.PID_DEVICE_MODEL_DESCRIPTION, C.PID_DEVICE_LABEL):
+                return a.response(C.RESPONSE_ACK, R.build_text(self.model))
+            if pid == C.PID_MANUFACTURER_LABEL:
+                return a.response(C.RESPONSE_ACK, R.build_text("pyrdmnet Simulator"))
+            if pid == C.PID_IDENTIFY_DEVICE:
+                return a.response(C.RESPONSE_ACK, bytes((int(self.identifying),)))
+            if pid == C.PID_COMPONENT_SCOPE:
                 if len(d) != 2:
-                    return nack(K.NR_FORMAT_ERROR)
+                    return nack(C.NR_FORMAT_ERROR)
                 if d != b"\x00\x01":
-                    return nack(K.NR_DATA_OUT_OF_RANGE)
-                return a.antwort(K.ANTWORT_ACK, R.baue_component_scope(self.scope))
-            if pid == K.PID_SEARCH_DOMAIN:
-                return a.antwort(K.ANTWORT_ACK, self.domain.encode("utf-8"))
-            return nack(K.NR_UNKNOWN_PID)
-        if pid == K.PID_IDENTIFY_DEVICE:
+                    return nack(C.NR_DATA_OUT_OF_RANGE)
+                return a.response(C.RESPONSE_ACK, R.build_component_scope(self.scope))
+            if pid == C.PID_SEARCH_DOMAIN:
+                return a.response(C.RESPONSE_ACK, self.domain.encode("utf-8"))
+            return nack(C.NR_UNKNOWN_PID)
+        if pid == C.PID_IDENTIFY_DEVICE:
             if len(d) != 1 or d[0] > 1:
-                return nack(K.NR_FORMAT_ERROR)
-            self.identifizieren = bool(d[0])
-        elif pid == K.PID_COMPONENT_SCOPE:
+                return nack(C.NR_FORMAT_ERROR)
+            self.identifying = bool(d[0])
+        elif pid == C.PID_COMPONENT_SCOPE:
             try:
-                neu = R.lese_component_scope(d)
-            except RdmFormatFehler:
-                return nack(K.NR_FORMAT_ERROR)
-            if neu.slot != 1:
-                return nack(K.NR_DATA_OUT_OF_RANGE)
-            if not neu.scope:
-                return nack(K.NR_DATA_OUT_OF_RANGE)  # Geräte haben genau einen Scope
-            self.scope = neu
-        elif pid == K.PID_SEARCH_DOMAIN:
-            if len(d) > K.E133_DOMAIN_LAENGE:
-                return nack(K.NR_DATA_OUT_OF_RANGE)
+                new = R.read_component_scope(d)
+            except RdmFormatError:
+                return nack(C.NR_FORMAT_ERROR)
+            if new.slot != 1:
+                return nack(C.NR_DATA_OUT_OF_RANGE)
+            if not new.scope:
+                return nack(C.NR_DATA_OUT_OF_RANGE)  # Geräte haben genau einen Scope
+            self.scope = new
+        elif pid == C.PID_SEARCH_DOMAIN:
+            if len(d) > C.E133_DOMAIN_LENGTH:
+                return nack(C.NR_DATA_OUT_OF_RANGE)
             self.domain = d.decode("utf-8", errors="replace")
         else:
-            return nack(K.NR_UNKNOWN_PID)
-        self.bei_aenderung(pid)
-        return a.antwort(K.ANTWORT_ACK)
+            return nack(C.NR_UNKNOWN_PID)
+        self.on_change(pid)
+        return a.response(C.RESPONSE_ACK)

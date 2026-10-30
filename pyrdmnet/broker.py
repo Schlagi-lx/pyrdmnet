@@ -30,437 +30,437 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import konstanten as K
+from . import constants as C
 from . import pdu as P
-from .broker_responder import BrokerResponder, BrokerResponderDaten
-from .llrp import LlrpNetz, LlrpTarget
-from .rdm import ALLE_CONTROLLER, RdmFormatFehler, RdmNachricht, Uid, hersteller_aus_mid_broadcast, ist_geraete_broadcast
-from .verbindung import Verbindung
+from .broker_responder import BrokerResponder, BrokerResponderInfo
+from .llrp import LlrpNetwork, LlrpTarget
+from .rdm import ALL_CONTROLLERS, RdmFormatError, RdmMessage, Uid, manufacturer_from_mid_broadcast, is_device_broadcast
+from .connection import TcpConnection
 
 log = logging.getLogger("pyrdmnet.broker")
 
 
 @dataclass
-class BrokerKonfig:
+class BrokerConfig:
     host: str = "127.0.0.1"
     port: int = 8888  # 0 = freien Port wählen
-    scope: str = K.E133_STANDARD_SCOPE
-    suchdomain: str = K.E133_STANDARD_DOMAIN  # für RDM SEARCH_DOMAIN
-    geraete_label: str = "pyrdmnet Broker"  # für RDM DEVICE_LABEL
-    uid: Uid = field(default_factory=lambda: Uid(K.ESTA_PROTOTYP_HERSTELLER, 0x00000001))
+    scope: str = C.E133_DEFAULT_SCOPE
+    search_domain: str = C.E133_DEFAULT_DOMAIN  # für RDM SEARCH_DOMAIN
+    device_label: str = "pyrdmnet Broker"  # für RDM DEVICE_LABEL
+    uid: Uid = field(default_factory=lambda: Uid(C.ESTA_PROTOTYPE_MANUFACTURER, 0x00000001))
     cid: uuid.UUID = field(default_factory=uuid.uuid4)
     max_clients: int = 64
-    heartbeat_intervall_s: float = K.E133_HEARTBEAT_INTERVALL_S
-    heartbeat_timeout_s: float = K.E133_HEARTBEAT_TIMEOUT_S
+    heartbeat_interval_s: float = C.E133_HEARTBEAT_INTERVAL_S
+    heartbeat_timeout_s: float = C.E133_HEARTBEAT_TIMEOUT_S
     connect_timeout_s: float = 10.0
-    ereignis_datei: Path | None = None
-    mitschnitt_datei: Path | None = None  # Rohdaten aller Pakete als JSONL (Diagnose Live-Test)
-    mitschnitt_max_zeilen: int = 50000
+    event_file: Path | None = None
+    capture_file: Path | None = None  # Rohdaten aller Pakete als JSONL (Diagnose Live-Test)
+    capture_max_lines: int = 50000
     llrp: bool = False  # als LLRP-Target antworten (E1.33 5.2: Pflicht für Broker im Realbetrieb)
-    llrp_netz: LlrpNetz | None = None  # Standard: Multicast auf dem Adapter von ``host``
+    llrp_network: LlrpNetwork | None = None  # Standard: Multicast auf dem Adapter von ``host``
 
 
 @dataclass
 class _Client:
-    verbindung: Verbindung
-    eintrag: P.ClientEintrag
-    inkrementell: bool
-    verbunden_seit: str
+    connection: TcpConnection
+    entry: P.ClientEntry
+    incremental: bool
+    connected_since: str
 
     @property
     def uid(self) -> Uid:
-        return self.eintrag.uid
+        return self.entry.uid
 
     @property
-    def ist_controller(self) -> bool:
-        return self.eintrag.typ == K.RPT_CLIENT_TYP_CONTROLLER
+    def is_controller(self) -> bool:
+        return self.entry.type == C.RPT_CLIENT_TYPE_CONTROLLER
 
 
-def _jetzt() -> str:
+def _now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="milliseconds")
 
 
 class RdmnetBroker:
-    def __init__(self, konfig: BrokerKonfig | None = None):
-        self.konfig = konfig or BrokerKonfig()
+    def __init__(self, config: BrokerConfig | None = None):
+        self.config = config or BrokerConfig()
         self._server: asyncio.base_events.Server | None = None
         self._clients: dict[Uid, _Client] = {}
-        self._dyn_uid_je_rid: dict[tuple[int, uuid.UUID], Uid] = {}
-        self._dyn_naechste: dict[int, int] = collections.defaultdict(lambda: 1)
+        self._dyn_uid_by_rid: dict[tuple[int, uuid.UUID], Uid] = {}
+        self._dyn_next: dict[int, int] = collections.defaultdict(lambda: 1)
         self._heartbeat_task: asyncio.Task | None = None
-        self._verbindungs_tasks: set[asyncio.Task] = set()
-        self.ereignisse: collections.deque = collections.deque(maxlen=1000)
-        self.zaehler = collections.Counter()
+        self._connection_tasks: set[asyncio.Task] = set()
+        self.events: collections.deque = collections.deque(maxlen=1000)
+        self.counters = collections.Counter()
         self.port: int | None = None
-        self._mitschnitt_zeilen = 0
+        self._capture_lines = 0
         self.llrp_target: LlrpTarget | None = None
-        k = self.konfig
+        k = self.config
         self.responder = BrokerResponder(
-            BrokerResponderDaten(uid=k.uid, scope=k.scope, suchdomain=k.suchdomain, geraete_label=k.geraete_label),
-            ereignis=self._ereignis)
+            BrokerResponderInfo(uid=k.uid, scope=k.scope, search_domain=k.search_domain, device_label=k.device_label),
+            event=self._event)
 
     # ----------------------------------------------------------------- Lebenszyklus
-    async def starten(self) -> None:
-        self._server = await asyncio.start_server(self._neue_verbindung, self.konfig.host, self.konfig.port)
+    async def start(self) -> None:
+        self._server = await asyncio.start_server(self._new_connection, self.config.host, self.config.port)
         self.port = self._server.sockets[0].getsockname()[1]
-        self._heartbeat_task = asyncio.create_task(self._heartbeat_schleife())
-        if self.konfig.llrp:
-            netz = self.konfig.llrp_netz or LlrpNetz(
-                adapter=self.konfig.host if self.konfig.host not in ("", "0.0.0.0", "127.0.0.1") else "0.0.0.0")
-            self.llrp_target = LlrpTarget(self.konfig.uid, self.konfig.cid, K.LLRP_TYP_BROKER,
-                                          self.responder.beantworten, netz)
+        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+        if self.config.llrp:
+            network = self.config.llrp_network or LlrpNetwork(
+                adapter=self.config.host if self.config.host not in ("", "0.0.0.0", "127.0.0.1") else "0.0.0.0")
+            self.llrp_target = LlrpTarget(self.config.uid, self.config.cid, C.LLRP_TYPE_BROKER,
+                                          self.responder.respond, network)
             try:
-                await self.llrp_target.starten()
-            except OSError as fehler:  # LLRP ist eine Zusatzfunktion: Broker läuft trotzdem
+                await self.llrp_target.start()
+            except OSError as error:  # LLRP ist eine Zusatzfunktion: Broker läuft trotzdem
                 self.llrp_target = None
-                self._ereignis("llrp_nicht_verfuegbar", fehler=str(fehler))
-        self._ereignis("broker_gestartet", host=self.konfig.host, port=self.port, scope=self.konfig.scope,
-                       uid=str(self.konfig.uid), cid=str(self.konfig.cid))
+                self._event("llrp_unavailable", error=str(error))
+        self._event("broker_started", host=self.config.host, port=self.port, scope=self.config.scope,
+                       uid=str(self.config.uid), cid=str(self.config.cid))
 
-    async def stoppen(self) -> None:
+    async def stop(self) -> None:
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
         if self.llrp_target:
-            await self.llrp_target.stoppen()
+            await self.llrp_target.stop()
             self.llrp_target = None
         for c in list(self._clients.values()):
             try:
-                await c.verbindung.sende_broker(K.VECTOR_BROKER_DISCONNECT, K.E133_DISCONNECT_SHUTDOWN.to_bytes(2, "big"))
+                await c.connection.send_broker(C.VECTOR_BROKER_DISCONNECT, C.E133_DISCONNECT_SHUTDOWN.to_bytes(2, "big"))
             except Exception:
                 pass
-            await c.verbindung.schliessen()
+            await c.connection.close()
         if self._server:
             self._server.close()
             await self._server.wait_closed()
-        for t in list(self._verbindungs_tasks):
+        for t in list(self._connection_tasks):
             t.cancel()
-        if self._verbindungs_tasks:
-            await asyncio.gather(*self._verbindungs_tasks, return_exceptions=True)
+        if self._connection_tasks:
+            await asyncio.gather(*self._connection_tasks, return_exceptions=True)
         self._clients.clear()
-        self._ereignis("broker_gestoppt")
+        self._event("broker_stopped")
 
     def status(self) -> dict:
         return {
-            "zeit_utc": _jetzt(),
-            "host": self.konfig.host,
+            "time_utc": _now(),
+            "host": self.config.host,
             "port": self.port,
-            "scope": self.konfig.scope,
-            "broker_uid": str(self.konfig.uid),
+            "scope": self.config.scope,
+            "broker_uid": str(self.config.uid),
             "clients": [
-                {"uid": str(c.uid), "typ": c.eintrag.typ_text, "cid": str(c.eintrag.cid),
-                 "gegenstelle": c.verbindung.gegenstelle, "verbunden_seit": c.verbunden_seit}
+                {"uid": str(c.uid), "type": c.entry.type_text, "cid": str(c.entry.cid),
+                 "peer": c.connection.peer, "connected_since": c.connected_since}
                 for c in self._clients.values()
             ],
-            "zaehler": dict(self.zaehler),
+            "counters": dict(self.counters),
         }
 
     # ----------------------------------------------------------------- Ereignisse
-    def _ereignis(self, art: str, **daten) -> None:
-        e = {"zeit_utc": _jetzt(), "ereignis": art, **daten}
-        self.ereignisse.append(e)
-        log.info("%s %s", art, daten)
-        if self.konfig.ereignis_datei:
+    def _event(self, kind: str, **data) -> None:
+        e = {"time_utc": _now(), "event": kind, **data}
+        self.events.append(e)
+        log.info("%s %s", kind, data)
+        if self.config.event_file:
             try:
-                with open(self.konfig.ereignis_datei, "a", encoding="utf-8") as f:
+                with open(self.config.event_file, "a", encoding="utf-8") as f:
                     f.write(json.dumps(e, ensure_ascii=False) + "\n")
-            except OSError as fehler:  # Protokoll darf den Broker nie stoppen
-                log.warning("Ereignisdatei nicht schreibbar: %s", fehler)
+            except OSError as error:  # Protokoll darf den Broker nie stoppen
+                log.warning("Ereignisdatei nicht schreibbar: %s", error)
 
-    def _mitschnitt(self, v: Verbindung, richtung: str, daten: bytes) -> None:
-        if self._mitschnitt_zeilen >= self.konfig.mitschnitt_max_zeilen:
+    def _capture(self, v: TcpConnection, direction: str, data: bytes) -> None:
+        if self._capture_lines >= self.config.capture_max_lines:
             return
-        self._mitschnitt_zeilen += 1
-        e = {"zeit_utc": _jetzt(), "gegenstelle": v.gegenstelle, "richtung": richtung, "laenge": len(daten),
-             "hex": daten[:4096].hex()}
+        self._capture_lines += 1
+        e = {"time_utc": _now(), "peer": v.peer, "richtung": direction, "laenge": len(data),
+             "hex": data[:4096].hex()}
         try:
-            with open(self.konfig.mitschnitt_datei, "a", encoding="utf-8") as f:
+            with open(self.config.capture_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(e) + "\n")
         except OSError:
             pass
 
     # ----------------------------------------------------------------- Verbindung
-    async def _neue_verbindung(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    async def _new_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         task = asyncio.current_task()
-        self._verbindungs_tasks.add(task)
-        v = Verbindung(reader, writer, self.konfig.cid)
-        if self.konfig.mitschnitt_datei:
-            v.mitschnitt = lambda richtung, daten: self._mitschnitt(v, richtung, daten)
-        self._ereignis("tcp_verbindung", gegenstelle=v.gegenstelle)
+        self._connection_tasks.add(task)
+        v = TcpConnection(reader, writer, self.config.cid)
+        if self.config.capture_file:
+            v.capture = lambda direction, data: self._capture(v, direction, data)
+        self._event("tcp_connection", peer=v.peer)
         client: _Client | None = None
         try:
-            client = await asyncio.wait_for(self._connect_abwickeln(v), timeout=self.konfig.connect_timeout_s)
+            client = await asyncio.wait_for(self._handle_connect(v), timeout=self.config.connect_timeout_s)
             if client is None:
                 return
             while True:
-                for root in await v.lese():
-                    await self._root_verarbeiten(client, root)
+                for root in await v.read():
+                    await self._handle_root(client, root)
         except (asyncio.IncompleteReadError, ConnectionError, asyncio.TimeoutError):
             pass
-        except P.ProtokollFehler as fehler:
-            self.zaehler["protokollfehler"] += 1
-            self._ereignis("protokollfehler", gegenstelle=v.gegenstelle, fehler=str(fehler))
+        except P.ProtocolError as error:
+            self.counters["protocol_error"] += 1
+            self._event("protocol_error", peer=v.peer, error=str(error))
         except asyncio.CancelledError:
             raise
-        except Exception as fehler:  # unerwartet: protokollieren, Verbindung schließen
-            self.zaehler["interner_fehler"] += 1
-            self._ereignis("interner_fehler", gegenstelle=v.gegenstelle, fehler=repr(fehler))
+        except Exception as error:  # unerwartet: protokollieren, Verbindung schließen
+            self.counters["internal_error"] += 1
+            self._event("internal_error", peer=v.peer, error=repr(error))
         finally:
-            await v.schliessen()
+            await v.close()
             if client is not None:
-                await self._client_entfernen(client)
-            self._verbindungs_tasks.discard(task)
+                await self._remove_client(client)
+            self._connection_tasks.discard(task)
 
-    async def _connect_abwickeln(self, v: Verbindung) -> _Client | None:
-        roots = await v.lese()
+    async def _handle_connect(self, v: TcpConnection) -> _Client | None:
+        roots = await v.read()
         root = roots[0]
-        if root.vektor != K.VECTOR_ROOT_E133_BROKER:
-            raise P.ProtokollFehler("Erste Nachricht ist keine Broker-PDU")
-        bp = P.lese_broker(root.daten)
-        if bp.vektor != K.VECTOR_BROKER_CONNECT:
-            raise P.ProtokollFehler("Erste Nachricht ist kein Client Connect")
+        if root.vector != C.VECTOR_ROOT_E133_BROKER:
+            raise P.ProtocolError("Erste Nachricht ist keine Broker-PDU")
+        bp = P.read_broker(root.data)
+        if bp.vector != C.VECTOR_BROKER_CONNECT:
+            raise P.ProtocolError("Erste Nachricht ist kein Client Connect")
         try:
-            cd = P.lese_connect(bp.daten)
-        except P.ProtokollFehler:
-            await self._connect_antwort(v, K.E133_CONNECT_INVALID_CLIENT_ENTRY, Uid(0, 0))
+            cd = P.read_connect(bp.data)
+        except P.ProtocolError:
+            await self._connect_reply(v, C.E133_CONNECT_INVALID_CLIENT_ENTRY, Uid(0, 0))
             raise
-        self._ereignis("connect_anfrage", gegenstelle=v.gegenstelle, scope=cd.scope, version=cd.version,
-                       uid=str(cd.client.uid), typ=cd.client.typ_text, protokoll=f"{cd.client.protokoll:#x}",
-                       inkrementell=bool(cd.flags & K.BROKER_CONNECT_FLAG_INKREMENTELL))
-        code, uid = self._connect_pruefen(cd, root.cid)
-        await self._connect_antwort(v, code, uid)
-        if code != K.E133_CONNECT_OK:
-            self.zaehler["connect_abgelehnt"] += 1
-            self._ereignis("connect_abgelehnt", gegenstelle=v.gegenstelle, grund=K.CONNECT_CODE_TEXT[code],
+        self._event("connect_request", peer=v.peer, scope=cd.scope, version=cd.version,
+                       uid=str(cd.client.uid), type=cd.client.type_text, protocol=f"{cd.client.protocol:#x}",
+                       incremental=bool(cd.flags & C.BROKER_CONNECT_FLAG_INCREMENTAL))
+        code, uid = self._check_connect(cd, root.cid)
+        await self._connect_reply(v, code, uid)
+        if code != C.E133_CONNECT_OK:
+            self.counters["connect_rejected"] += 1
+            self._event("connect_rejected", peer=v.peer, reason=C.CONNECT_CODE_TEXT[code],
                            scope=cd.scope, uid=str(cd.client.uid))
             return None
-        eintrag = P.ClientEintrag(cd.client.cid, uid, cd.client.typ, cd.client.binding_cid)
-        client = _Client(v, eintrag, bool(cd.flags & K.BROKER_CONNECT_FLAG_INKREMENTELL), _jetzt())
+        entry = P.ClientEntry(cd.client.cid, uid, cd.client.type, cd.client.binding_cid)
+        client = _Client(v, entry, bool(cd.flags & C.BROKER_CONNECT_FLAG_INCREMENTAL), _now())
         self._clients[uid] = client
-        self.zaehler["connect_ok"] += 1
-        self._ereignis("client_verbunden", uid=str(uid), typ=eintrag.typ_text, gegenstelle=v.gegenstelle)
-        await self._an_inkrementelle(K.VECTOR_BROKER_CLIENT_ADD, eintrag.kodieren(), ausser=uid)
+        self.counters["connect_ok"] += 1
+        self._event("client_connected", uid=str(uid), type=entry.type_text, peer=v.peer)
+        await self._send_to_incremental(C.VECTOR_BROKER_CLIENT_ADD, entry.encode(), except_uid=uid)
         return client
 
-    def _connect_pruefen(self, cd: P.ConnectDaten, root_cid: uuid.UUID) -> tuple[int, Uid]:
-        if cd.scope != self.konfig.scope:
-            return K.E133_CONNECT_SCOPE_MISMATCH, Uid(0, 0)
-        if cd.version != K.E133_VERSION or cd.client.protokoll != K.E133_CLIENT_PROTOKOLL_RPT:
-            return K.E133_CONNECT_INVALID_CLIENT_ENTRY, Uid(0, 0)
-        if cd.client.typ not in (K.RPT_CLIENT_TYP_GERAET, K.RPT_CLIENT_TYP_CONTROLLER):
-            return K.E133_CONNECT_INVALID_CLIENT_ENTRY, Uid(0, 0)
+    def _check_connect(self, cd: P.ConnectData, root_cid: uuid.UUID) -> tuple[int, Uid]:
+        if cd.scope != self.config.scope:
+            return C.E133_CONNECT_SCOPE_MISMATCH, Uid(0, 0)
+        if cd.version != C.E133_VERSION or cd.client.protocol != C.E133_CLIENT_PROTOCOL_RPT:
+            return C.E133_CONNECT_INVALID_CLIENT_ENTRY, Uid(0, 0)
+        if cd.client.type not in (C.RPT_CLIENT_TYPE_DEVICE, C.RPT_CLIENT_TYPE_CONTROLLER):
+            return C.E133_CONNECT_INVALID_CLIENT_ENTRY, Uid(0, 0)
         if cd.client.cid != root_cid:
-            return K.E133_CONNECT_INVALID_CLIENT_ENTRY, Uid(0, 0)
-        if len(self._clients) >= self.konfig.max_clients:
-            return K.E133_CONNECT_CAPACITY_EXCEEDED, Uid(0, 0)
-        return self._uid_pruefen(cd.client.uid, cd.client.cid)
+            return C.E133_CONNECT_INVALID_CLIENT_ENTRY, Uid(0, 0)
+        if len(self._clients) >= self.config.max_clients:
+            return C.E133_CONNECT_CAPACITY_EXCEEDED, Uid(0, 0)
+        return self._check_uid(cd.client.uid, cd.client.cid)
 
-    def _uid_pruefen(self, uid: Uid, cid: uuid.UUID, eigener: _Client | None = None) -> tuple[int, Uid]:
+    def _check_uid(self, uid: Uid, cid: uuid.UUID, own: _Client | None = None) -> tuple[int, Uid]:
         """UID-Prüfung nach E1.33 9.1.5; ``eigener`` = Client, der seinen Eintrag ändert."""
-        if uid.ist_dynamisch_angefragt:
-            uid = self._dyn_uid_vergeben(uid.hersteller & 0x7FFF, cid)
-        elif not uid.ist_gueltig_fuer_client or uid.ist_dynamisch:
-            return K.E133_CONNECT_INVALID_UID, Uid(0, 0)
-        besitzer = self._clients.get(uid)
-        if (besitzer is not None and besitzer is not eigener) or uid == self.konfig.uid:
-            return K.E133_CONNECT_DUPLICATE_UID, Uid(0, 0)
-        return K.E133_CONNECT_OK, uid
+        if uid.is_dynamic_request:
+            uid = self._assign_dyn_uid(uid.manufacturer & 0x7FFF, cid)
+        elif not uid.is_valid_for_client or uid.is_dynamic:
+            return C.E133_CONNECT_INVALID_UID, Uid(0, 0)
+        owner = self._clients.get(uid)
+        if (owner is not None and owner is not own) or uid == self.config.uid:
+            return C.E133_CONNECT_DUPLICATE_UID, Uid(0, 0)
+        return C.E133_CONNECT_OK, uid
 
-    def _dyn_uid_vergeben(self, hersteller: int, rid: uuid.UUID) -> Uid:
-        schluessel = (hersteller, rid)
-        if schluessel not in self._dyn_uid_je_rid:
-            n = self._dyn_naechste[hersteller]
-            self._dyn_naechste[hersteller] = n + 1
-            self._dyn_uid_je_rid[schluessel] = Uid(0x8000 | hersteller, n)
-        return self._dyn_uid_je_rid[schluessel]
+    def _assign_dyn_uid(self, manufacturer: int, rid: uuid.UUID) -> Uid:
+        key = (manufacturer, rid)
+        if key not in self._dyn_uid_by_rid:
+            n = self._dyn_next[manufacturer]
+            self._dyn_next[manufacturer] = n + 1
+            self._dyn_uid_by_rid[key] = Uid(0x8000 | manufacturer, n)
+        return self._dyn_uid_by_rid[key]
 
-    async def _connect_antwort(self, v: Verbindung, code: int, uid: Uid) -> None:
-        rep = P.ConnectReply(code, K.E133_VERSION, self.konfig.uid, uid)
-        await v.sende_broker(K.VECTOR_BROKER_CONNECT_REPLY, rep.kodieren())
+    async def _connect_reply(self, v: TcpConnection, code: int, uid: Uid) -> None:
+        rep = P.ConnectReply(code, C.E133_VERSION, self.config.uid, uid)
+        await v.send_broker(C.VECTOR_BROKER_CONNECT_REPLY, rep.encode())
 
-    async def _client_entfernen(self, client: _Client) -> None:
+    async def _remove_client(self, client: _Client) -> None:
         if self._clients.get(client.uid) is client:
             del self._clients[client.uid]
-            self._ereignis("client_getrennt", uid=str(client.uid), typ=client.eintrag.typ_text)
-            await self._an_inkrementelle(K.VECTOR_BROKER_CLIENT_REMOVE, client.eintrag.kodieren())
+            self._event("client_disconnected", uid=str(client.uid), type=client.entry.type_text)
+            await self._send_to_incremental(C.VECTOR_BROKER_CLIENT_REMOVE, client.entry.encode())
 
-    async def _an_inkrementelle(self, vektor: int, daten: bytes, ausser: Uid | None = None) -> None:
+    async def _send_to_incremental(self, vector: int, data: bytes, except_uid: Uid | None = None) -> None:
         for c in list(self._clients.values()):
-            if c.inkrementell and c.uid != ausser:
-                await self._sicher_senden(c, c.verbindung.sende_broker(vektor, daten))
+            if c.incremental and c.uid != except_uid:
+                await self._safe_send(c, c.connection.send_broker(vector, data))
 
-    async def _sicher_senden(self, client: _Client, coro) -> bool:
+    async def _safe_send(self, client: _Client, coro) -> bool:
         try:
             await coro
             return True
-        except (ConnectionError, OSError) as fehler:
-            self._ereignis("senden_fehlgeschlagen", uid=str(client.uid), fehler=str(fehler))
-            await client.verbindung.schliessen()
+        except (ConnectionError, OSError) as error:
+            self._event("send_failed", uid=str(client.uid), error=str(error))
+            await client.connection.close()
             return False
 
     # ----------------------------------------------------------------- Nachrichten
-    async def _root_verarbeiten(self, client: _Client, root: P.RootPdu) -> None:
-        if root.vektor == K.VECTOR_ROOT_E133_BROKER:
-            await self._broker_verarbeiten(client, P.lese_broker(root.daten))
-        elif root.vektor == K.VECTOR_ROOT_E133_RPT:
-            await self._rpt_verarbeiten(client, P.lese_rpt(root.daten))
+    async def _handle_root(self, client: _Client, root: P.RootPdu) -> None:
+        if root.vector == C.VECTOR_ROOT_E133_BROKER:
+            await self._handle_broker(client, P.read_broker(root.data))
+        elif root.vector == C.VECTOR_ROOT_E133_RPT:
+            await self._handle_rpt(client, P.read_rpt(root.data))
         else:
-            self.zaehler["unbekannter_root_vektor"] += 1
+            self.counters["unknown_root_vector"] += 1
 
-    async def _broker_verarbeiten(self, client: _Client, bp: P.BrokerPdu) -> None:
-        v = client.verbindung
-        if bp.vektor == K.VECTOR_BROKER_NULL:
+    async def _handle_broker(self, client: _Client, bp: P.BrokerPdu) -> None:
+        v = client.connection
+        if bp.vector == C.VECTOR_BROKER_NULL:
             return
-        if bp.vektor == K.VECTOR_BROKER_FETCH_CLIENT_LIST:
-            daten = b"".join(c.eintrag.kodieren() for c in self._clients.values())
-            await v.sende_broker(K.VECTOR_BROKER_CONNECTED_CLIENT_LIST, daten)
-        elif bp.vektor == K.VECTOR_BROKER_REQUEST_DYNAMIC_UIDS:
-            antworten = []
-            for a in P.lese_dyn_uid_anfragen(bp.daten):
-                if not a.uid.ist_dynamisch_angefragt:
-                    antworten.append((a.uid, a.rid, K.E133_DYN_UID_UNGUELTIG))
+        if bp.vector == C.VECTOR_BROKER_FETCH_CLIENT_LIST:
+            data = b"".join(c.entry.encode() for c in self._clients.values())
+            await v.send_broker(C.VECTOR_BROKER_CONNECTED_CLIENT_LIST, data)
+        elif bp.vector == C.VECTOR_BROKER_REQUEST_DYNAMIC_UIDS:
+            responses = []
+            for a in P.read_dyn_uid_requests(bp.data):
+                if not a.uid.is_dynamic_request:
+                    responses.append((a.uid, a.rid, C.E133_DYN_UID_INVALID))
                 else:
-                    antworten.append((self._dyn_uid_vergeben(a.uid.hersteller & 0x7FFF, a.rid), a.rid,
-                                      K.E133_DYN_UID_OK))
-            await v.sende_broker(K.VECTOR_BROKER_ASSIGNED_DYNAMIC_UIDS, P.baue_dyn_uid_zuordnungen(antworten))
-        elif bp.vektor == K.VECTOR_BROKER_FETCH_DYNAMIC_UID_LIST:
-            rueck = {u: rid for (_h, rid), u in self._dyn_uid_je_rid.items()}
-            antworten = [(u, rueck[u], K.E133_DYN_UID_OK) if u in rueck
-                         else (u, uuid.UUID(int=0), K.E133_DYN_UID_NICHT_GEFUNDEN)
-                         for u in P.lese_uid_liste(bp.daten)]
-            await v.sende_broker(K.VECTOR_BROKER_ASSIGNED_DYNAMIC_UIDS, P.baue_dyn_uid_zuordnungen(antworten))
-        elif bp.vektor == K.VECTOR_BROKER_CLIENT_ENTRY_UPDATE:
-            await self._client_eintrag_aendern(client, bp.daten)
-        elif bp.vektor == K.VECTOR_BROKER_DISCONNECT:
-            self._ereignis("client_disconnect", uid=str(client.uid))
-            await v.schliessen()
+                    responses.append((self._assign_dyn_uid(a.uid.manufacturer & 0x7FFF, a.rid), a.rid,
+                                      C.E133_DYN_UID_OK))
+            await v.send_broker(C.VECTOR_BROKER_ASSIGNED_DYNAMIC_UIDS, P.build_dyn_uid_assignments(responses))
+        elif bp.vector == C.VECTOR_BROKER_FETCH_DYNAMIC_UID_LIST:
+            reverse = {u: rid for (_h, rid), u in self._dyn_uid_by_rid.items()}
+            responses = [(u, reverse[u], C.E133_DYN_UID_OK) if u in reverse
+                         else (u, uuid.UUID(int=0), C.E133_DYN_UID_NOT_FOUND)
+                         for u in P.read_uid_list(bp.data)]
+            await v.send_broker(C.VECTOR_BROKER_ASSIGNED_DYNAMIC_UIDS, P.build_dyn_uid_assignments(responses))
+        elif bp.vector == C.VECTOR_BROKER_CLIENT_ENTRY_UPDATE:
+            await self._update_client_entry(client, bp.data)
+        elif bp.vector == C.VECTOR_BROKER_DISCONNECT:
+            self._event("client_disconnect", uid=str(client.uid))
+            await v.close()
         else:
-            self.zaehler["broker_vektor_ignoriert"] += 1
+            self.counters["broker_vector_ignored"] += 1
 
-    async def _client_eintrag_aendern(self, client: _Client, daten: bytes) -> None:
+    async def _update_client_entry(self, client: _Client, data: bytes) -> None:
         """Client Entry Update (E1.33 6.3.1.4, 9.1.6): wie ein Connect prüfen, ohne Scope.
 
         Protokoll (Vector) und CID (Header) müssen gleich bleiben; UID, Client-Typ und
         Binding-CID (Data) dürfen sich ändern. Bei Fehler: Connect Reply mit Fehlercode,
         Client entfernen, Verbindung schließen.
         """
-        v, alt = client.verbindung, client.eintrag
+        v, old = client.connection, client.entry
         try:
-            flags, neu = P.lese_client_entry_update(daten)
-        except P.ProtokollFehler:
-            neu = None
-        if (neu is None or neu.protokoll != alt.protokoll or neu.cid != alt.cid
-                or neu.typ not in (K.RPT_CLIENT_TYP_GERAET, K.RPT_CLIENT_TYP_CONTROLLER)):
-            code, uid = K.E133_CONNECT_INVALID_CLIENT_ENTRY, Uid(0, 0)
+            flags, new = P.read_client_entry_update(data)
+        except P.ProtocolError:
+            new = None
+        if (new is None or new.protocol != old.protocol or new.cid != old.cid
+                or new.type not in (C.RPT_CLIENT_TYPE_DEVICE, C.RPT_CLIENT_TYPE_CONTROLLER)):
+            code, uid = C.E133_CONNECT_INVALID_CLIENT_ENTRY, Uid(0, 0)
         else:
-            code, uid = self._uid_pruefen(neu.uid, neu.cid, eigener=client)
-        if code != K.E133_CONNECT_OK:
-            self.zaehler["eintrag_update_abgelehnt"] += 1
-            self._ereignis("eintrag_update_abgelehnt", uid=str(alt.uid), grund=K.CONNECT_CODE_TEXT[code])
-            await self._sicher_senden(client, self._connect_antwort(v, code, uid))
-            await self._client_entfernen(client)
-            await v.schliessen()
+            code, uid = self._check_uid(new.uid, new.cid, own=client)
+        if code != C.E133_CONNECT_OK:
+            self.counters["entry_update_rejected"] += 1
+            self._event("entry_update_rejected", uid=str(old.uid), reason=C.CONNECT_CODE_TEXT[code])
+            await self._safe_send(client, self._connect_reply(v, code, uid))
+            await self._remove_client(client)
+            await v.close()
             return
-        eintrag = P.ClientEintrag(neu.cid, uid, neu.typ, neu.binding_cid)
-        if uid != alt.uid:
-            self._clients.pop(alt.uid, None)
+        entry = P.ClientEntry(new.cid, uid, new.type, new.binding_cid)
+        if uid != old.uid:
+            self._clients.pop(old.uid, None)
             self._clients[uid] = client
-        client.eintrag = eintrag
-        client.inkrementell = bool(flags & K.BROKER_CONNECT_FLAG_INKREMENTELL)
-        self.zaehler["eintrag_update_ok"] += 1
-        self._ereignis("eintrag_geaendert", uid_alt=str(alt.uid), uid=str(uid), typ=eintrag.typ_text,
-                       inkrementell=client.inkrementell)
-        await self._sicher_senden(client, self._connect_antwort(v, K.E133_CONNECT_OK, uid))
-        await self._an_inkrementelle(K.VECTOR_BROKER_CLIENT_ENTRY_CHANGE, eintrag.kodieren(), ausser=uid)
+        client.entry = entry
+        client.incremental = bool(flags & C.BROKER_CONNECT_FLAG_INCREMENTAL)
+        self.counters["entry_update_ok"] += 1
+        self._event("entry_changed", uid_old=str(old.uid), uid=str(uid), type=entry.type_text,
+                       incremental=client.incremental)
+        await self._safe_send(client, self._connect_reply(v, C.E133_CONNECT_OK, uid))
+        await self._send_to_incremental(C.VECTOR_BROKER_CLIENT_ENTRY_CHANGE, entry.encode(), except_uid=uid)
 
-    async def _rpt_verarbeiten(self, client: _Client, rpt: P.RptPdu) -> None:
-        k = rpt.kopf
-        if k.quelle != client.uid:
-            self.zaehler["rpt_falsche_quelle"] += 1
-            self._ereignis("rpt_verworfen", grund="Quell-UID passt nicht zur Verbindung", uid=str(client.uid))
+    async def _handle_rpt(self, client: _Client, rpt: P.RptPdu) -> None:
+        k = rpt.header
+        if k.source != client.uid:
+            self.counters["rpt_wrong_source"] += 1
+            self._event("rpt_dropped", reason="Quell-UID passt nicht zur Verbindung", uid=str(client.uid))
             return
-        paket = P.baue_paket(K.VECTOR_ROOT_E133_RPT, self.konfig.cid, P.baue_rpt(k, rpt.daten))
+        packet = P.build_packet(C.VECTOR_ROOT_E133_RPT, self.config.cid, P.build_rpt(k, rpt.data))
 
-        if k.vektor == K.VECTOR_RPT_REQUEST:
-            if not client.ist_controller:
-                self.zaehler["request_von_geraet_verworfen"] += 1
+        if k.vector == C.VECTOR_RPT_REQUEST:
+            if not client.is_controller:
+                self.counters["request_from_device_dropped"] += 1
                 return
-            if ist_geraete_broadcast(k.ziel):
-                mid = hersteller_aus_mid_broadcast(k.ziel)
+            if is_device_broadcast(k.dest):
+                mid = manufacturer_from_mid_broadcast(k.dest)
                 for c in list(self._clients.values()):
-                    if not c.ist_controller and (mid is None or c.uid.hersteller & 0x7FFF == mid):
-                        await self._sicher_senden(c, c.verbindung.senden_roh(paket))
-                self.zaehler["rpt_broadcast"] += 1
-                await self._status_an(client, k, K.RPT_STATUS_BROADCAST_COMPLETE)
+                    if not c.is_controller and (mid is None or c.uid.manufacturer & 0x7FFF == mid):
+                        await self._safe_send(c, c.connection.send_raw(packet))
+                self.counters["rpt_broadcast"] += 1
+                await self._status_to(client, k, C.RPT_STATUS_BROADCAST_COMPLETE)
                 return
-            if k.ziel == self.konfig.uid:
-                await self._an_broker_responder(client, rpt)
+            if k.dest == self.config.uid:
+                await self._to_broker_responder(client, rpt)
                 return
-            ziel = self._clients.get(k.ziel)
-            if ziel is None or ziel.ist_controller:
-                self.zaehler["rpt_unbekannte_uid"] += 1
-                await self._status_an(client, k, K.RPT_STATUS_UNKNOWN_RPT_UID)
+            dest = self._clients.get(k.dest)
+            if dest is None or dest.is_controller:
+                self.counters["rpt_unknown_uid"] += 1
+                await self._status_to(client, k, C.RPT_STATUS_UNKNOWN_RPT_UID)
                 return
-            if await self._sicher_senden(ziel, ziel.verbindung.senden_roh(paket)):
-                self.zaehler["rpt_request_weitergeleitet"] += 1
+            if await self._safe_send(dest, dest.connection.send_raw(packet)):
+                self.counters["rpt_request_forwarded"] += 1
 
-        elif k.vektor in (K.VECTOR_RPT_NOTIFICATION, K.VECTOR_RPT_STATUS):
-            if k.ziel == ALLE_CONTROLLER:
+        elif k.vector in (C.VECTOR_RPT_NOTIFICATION, C.VECTOR_RPT_STATUS):
+            if k.dest == ALL_CONTROLLERS:
                 for c in list(self._clients.values()):
-                    if c.ist_controller:
-                        await self._sicher_senden(c, c.verbindung.senden_roh(paket))
+                    if c.is_controller:
+                        await self._safe_send(c, c.connection.send_raw(packet))
             else:
-                ziel = self._clients.get(k.ziel)
-                if ziel is None:
-                    self.zaehler["rpt_antwort_ohne_ziel"] += 1
+                dest = self._clients.get(k.dest)
+                if dest is None:
+                    self.counters["rpt_response_without_dest"] += 1
                     return
-                await self._sicher_senden(ziel, ziel.verbindung.senden_roh(paket))
-            self.zaehler["rpt_antwort_weitergeleitet"] += 1
+                await self._safe_send(dest, dest.connection.send_raw(packet))
+            self.counters["rpt_response_forwarded"] += 1
         else:
-            self.zaehler["rpt_unbekannter_vektor"] += 1
-            await self._status_an(client, k, K.RPT_STATUS_UNKNOWN_VECTOR)
+            self.counters["rpt_unknown_vector"] += 1
+            await self._status_to(client, k, C.RPT_STATUS_UNKNOWN_VECTOR)
 
-    async def _an_broker_responder(self, client: _Client, rpt: P.RptPdu) -> None:
+    async def _to_broker_responder(self, client: _Client, rpt: P.RptPdu) -> None:
         """RPT-Request an die Broker-UID: vom eigenen RDM-Responder beantworten (E1.33 6.2)."""
-        k = rpt.kopf
-        if k.ziel_endpoint != K.E133_NULL_ENDPOINT:
-            await self._status_an(client, k, K.RPT_STATUS_UNKNOWN_ENDPOINT)
+        k = rpt.header
+        if k.dest_endpoint != C.E133_NULL_ENDPOINT:
+            await self._status_to(client, k, C.RPT_STATUS_UNKNOWN_ENDPOINT)
             return
         try:
-            nachrichten = P.lese_request_oder_notification(rpt.daten, K.VECTOR_REQUEST_RDM_CMD)
-            if len(nachrichten) != 1:
-                raise P.ProtokollFehler("RPT-Request muss genau einen RDM-Befehl enthalten")
-            roh = nachrichten[0]
-            anfrage = RdmNachricht.dekodieren(roh)
-        except (P.ProtokollFehler, RdmFormatFehler, ValueError):
-            await self._status_an(client, k, K.RPT_STATUS_INVALID_MESSAGE)
+            messages = P.read_request_or_notification(rpt.data, C.VECTOR_REQUEST_RDM_CMD)
+            if len(messages) != 1:
+                raise P.ProtocolError("RPT-Request muss genau einen RDM-Befehl enthalten")
+            raw = messages[0]
+            request = RdmMessage.decode(raw)
+        except (P.ProtocolError, RdmFormatError, ValueError):
+            await self._status_to(client, k, C.RPT_STATUS_INVALID_MESSAGE)
             return
-        if anfrage.ziel != self.konfig.uid and not anfrage.ziel.ist_broadcast:
-            await self._status_an(client, k, K.RPT_STATUS_UNKNOWN_RDM_UID)
+        if request.dest != self.config.uid and not request.dest.is_broadcast:
+            await self._status_to(client, k, C.RPT_STATUS_UNKNOWN_RDM_UID)
             return
-        antwort = self.responder.beantworten(anfrage)
-        self.zaehler["broker_rdm_anfrage"] += 1
-        if antwort is None:
+        response = self.responder.respond(request)
+        self.counters["broker_rdm_request"] += 1
+        if response is None:
             return
-        rkopf = P.RptKopf(K.VECTOR_RPT_NOTIFICATION, self.konfig.uid, K.E133_NULL_ENDPOINT, k.quelle,
-                          k.quelle_endpoint, k.sequenz)
-        await self._sicher_senden(client, client.verbindung.sende_rpt(
-            rkopf, P.baue_notification([roh, antwort.kodieren()])))
+        rheader = P.RptHeader(C.VECTOR_RPT_NOTIFICATION, self.config.uid, C.E133_NULL_ENDPOINT, k.source,
+                          k.source_endpoint, k.sequence)
+        await self._safe_send(client, client.connection.send_rpt(
+            rheader, P.build_notification([raw, response.encode()])))
 
-    async def _status_an(self, client: _Client, k: P.RptKopf, code: int) -> None:
-        antwort = P.RptKopf(K.VECTOR_RPT_STATUS, k.ziel, k.ziel_endpoint, k.quelle, k.quelle_endpoint, k.sequenz)
-        await self._sicher_senden(client, client.verbindung.sende_rpt(antwort, P.baue_status(code)))
+    async def _status_to(self, client: _Client, k: P.RptHeader, code: int) -> None:
+        response = P.RptHeader(C.VECTOR_RPT_STATUS, k.dest, k.dest_endpoint, k.source, k.source_endpoint, k.sequence)
+        await self._safe_send(client, client.connection.send_rpt(response, P.build_status(code)))
 
     # ----------------------------------------------------------------- Heartbeat
-    async def _heartbeat_schleife(self) -> None:
-        takt = min(1.0, self.konfig.heartbeat_intervall_s / 3)
+    async def _heartbeat_loop(self) -> None:
+        tick = min(1.0, self.config.heartbeat_interval_s / 3)
         while True:
-            await asyncio.sleep(takt)
-            jetzt = time.monotonic()
+            await asyncio.sleep(tick)
+            now = time.monotonic()
             for c in list(self._clients.values()):
-                v = c.verbindung
-                if jetzt - v.letzter_empfang > self.konfig.heartbeat_timeout_s:
-                    self.zaehler["heartbeat_timeout"] += 1
-                    self._ereignis("heartbeat_timeout", uid=str(c.uid))
-                    await v.schliessen()  # Lese-Schleife endet, Client wird entfernt
-                elif jetzt - v.letztes_senden >= self.konfig.heartbeat_intervall_s:
-                    await self._sicher_senden(c, v.sende_broker(K.VECTOR_BROKER_NULL))
+                v = c.connection
+                if now - v.last_received > self.config.heartbeat_timeout_s:
+                    self.counters["heartbeat_timeout"] += 1
+                    self._event("heartbeat_timeout", uid=str(c.uid))
+                    await v.close()  # Lese-Schleife endet, Client wird entfernt
+                elif now - v.last_sent >= self.config.heartbeat_interval_s:
+                    await self._safe_send(c, v.send_broker(C.VECTOR_BROKER_NULL))

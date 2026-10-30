@@ -12,7 +12,7 @@ ein Abgleich mit E1.33-2019 sinnvoll (siehe ARCHITEKTUR.md, offene Punkte).
 """
 
 # ---------------------------------------------------------------- ACN-Rahmen
-ACN_TCP_PREAMBEL = b"ASC-E1.17\x00\x00\x00"  # 12 Byte, danach u32 PDU-Blockgröße
+ACN_TCP_PREAMBLE = b"ASC-E1.17\x00\x00\x00"  # 12 Byte, danach u32 PDU-Blockgröße
 ACN_PDU_FLAGS = 0xF0  # L|V|H|D gesetzt, 20-Bit-Länge (3 Byte Flags+Länge)
 
 VECTOR_ROOT_E133_RPT = 0x00000005
@@ -21,9 +21,9 @@ VECTOR_ROOT_LLRP = 0x0000000A
 VECTOR_ROOT_E133_EPT = 0x0000000B
 
 # ---------------------------------------------------------------- LLRP (E1.33 Abschnitt 5, Tabelle A-2)
-ACN_UDP_PREAMBEL = b"\x00\x10\x00\x00ASC-E1.17\x00\x00\x00"  # Präambel 16, Postambel 0, ACN-Kennung
-LLRP_IPV4_ANFRAGE = "239.255.250.133"  # Manager -> Targets
-LLRP_IPV4_ANTWORT = "239.255.250.134"  # Targets -> Manager
+ACN_UDP_PREAMBLE = b"\x00\x10\x00\x00ASC-E1.17\x00\x00\x00"  # Präambel 16, Postambel 0, ACN-Kennung
+LLRP_IPV4_REQUEST = "239.255.250.133"  # Manager -> Targets
+LLRP_IPV4_RESPONSE = "239.255.250.134"  # Targets -> Manager
 LLRP_PORT = 5569
 LLRP_TIMEOUT_S = 2.0
 LLRP_TARGET_TIMEOUT_S = 0.5
@@ -35,33 +35,33 @@ VECTOR_LLRP_PROBE_REPLY = 0x00000002
 VECTOR_LLRP_RDM_CMD = 0x00000003
 VECTOR_PROBE_REQUEST_DATA = 0x01
 VECTOR_PROBE_REPLY_DATA = 0x01
-LLRP_FILTER_NUR_UNVERBUNDEN = 0x0001  # Client nicht mit Broker verbunden
-LLRP_FILTER_NUR_BROKER = 0x0002
-LLRP_TYP_GERAET = 0x00
-LLRP_TYP_CONTROLLER = 0x01
-LLRP_TYP_BROKER = 0x02
-LLRP_TYP_KEIN_RDMNET = 0xFF
-LLRP_TYP_TEXT = {0x00: "Gerät", 0x01: "Controller", 0x02: "Broker", 0xFF: "nur LLRP"}
+LLRP_FILTER_CLIENT_CONN_INACTIVE = 0x0001  # Client nicht mit Broker verbunden
+LLRP_FILTER_BROKERS_ONLY = 0x0002
+LLRP_TYPE_DEVICE = 0x00
+LLRP_TYPE_CONTROLLER = 0x01
+LLRP_TYPE_BROKER = 0x02
+LLRP_TYPE_NON_RDMNET = 0xFF
+LLRP_TYPE_TEXT = {0x00: "Gerät", 0x01: "Controller", 0x02: "Broker", 0xFF: "nur LLRP"}
 
 # ---------------------------------------------------------------- E1.33 allgemein
 E133_VERSION = 1
-E133_STANDARD_SCOPE = "default"
-E133_STANDARD_DOMAIN = "local."
-E133_SCOPE_LAENGE = 63
-E133_DOMAIN_LAENGE = 231
-E133_KEINE_STATISCHE_KONFIG = 0x00  # COMPONENT_SCOPE: Static Config Type
-E133_STATISCHE_KONFIG_IPV4 = 0x01
-E133_STATISCHE_KONFIG_IPV6 = 0x02
-E133_BROKER_DEAKTIVIERT = 0x00  # BROKER_STATUS: Broker State
-E133_BROKER_AKTIV = 0x01
+E133_DEFAULT_SCOPE = "default"
+E133_DEFAULT_DOMAIN = "local."
+E133_SCOPE_LENGTH = 63
+E133_DOMAIN_LENGTH = 231
+E133_NO_STATIC_CONFIG = 0x00  # COMPONENT_SCOPE: Static Config Type
+E133_STATIC_CONFIG_IPV4 = 0x01
+E133_STATIC_CONFIG_IPV6 = 0x02
+E133_BROKER_DISABLED = 0x00  # BROKER_STATUS: Broker State
+E133_BROKER_ACTIVE = 0x01
 E133_BROKER_STANDBY = 0x02
-E133_HEARTBEAT_INTERVALL_S = 15.0
+E133_HEARTBEAT_INTERVAL_S = 15.0
 E133_HEARTBEAT_TIMEOUT_S = 45.0
 E133_NULL_ENDPOINT = 0x0000
 E133_BROADCAST_ENDPOINT = 0xFFFF
-E133_RPT_ALLE_CONTROLLER = 0xFFFCFFFFFFFF
-E133_RPT_ALLE_GERAETE = 0xFFFDFFFFFFFF
-E133_DNSSD_TYP = "_rdmnet._tcp.local."
+E133_RPT_ALL_CONTROLLERS = 0xFFFCFFFFFFFF
+E133_RPT_ALL_DEVICES = 0xFFFDFFFFFFFF
+E133_DNSSD_TYPE = "_rdmnet._tcp.local."
 
 # Broker-PDU-Vektoren (2 Byte)
 VECTOR_BROKER_CONNECT = 0x0001
@@ -80,7 +80,7 @@ VECTOR_BROKER_FETCH_DYNAMIC_UID_LIST = 0x000D
 VECTOR_BROKER_DISCONNECT = 0x000E
 VECTOR_BROKER_NULL = 0x000F
 
-BROKER_CONNECT_FLAG_INKREMENTELL = 0x01
+BROKER_CONNECT_FLAG_INCREMENTAL = 0x01
 
 # Connect-Rückmeldecodes
 E133_CONNECT_OK = 0x0000
@@ -100,18 +100,18 @@ CONNECT_CODE_TEXT = {
 }
 
 E133_DYN_UID_OK = 0x0000
-E133_DYN_UID_UNGUELTIG = 0x0001
-E133_DYN_UID_NICHT_GEFUNDEN = 0x0002
-E133_DYN_UID_DOPPELTE_RID = 0x0003
-E133_DYN_UID_KAPAZITAET = 0x0004
+E133_DYN_UID_INVALID = 0x0001
+E133_DYN_UID_NOT_FOUND = 0x0002
+E133_DYN_UID_DUPLICATE_RID = 0x0003
+E133_DYN_UID_CAPACITY_EXCEEDED = 0x0004
 
 E133_DISCONNECT_SHUTDOWN = 0x0000
 E133_DISCONNECT_SOFTWARE_FAULT = 0x0003
 
-E133_CLIENT_PROTOKOLL_RPT = 0x00000005
-E133_CLIENT_PROTOKOLL_EPT = 0x0000000B
-RPT_CLIENT_TYP_GERAET = 0x00
-RPT_CLIENT_TYP_CONTROLLER = 0x01
+E133_CLIENT_PROTOCOL_RPT = 0x00000005
+E133_CLIENT_PROTOCOL_EPT = 0x0000000B
+RPT_CLIENT_TYPE_DEVICE = 0x00
+RPT_CLIENT_TYPE_CONTROLLER = 0x01
 
 # RPT-Vektoren (4 Byte)
 VECTOR_RPT_REQUEST = 0x00000001
@@ -153,10 +153,10 @@ PID_BROKER_STATUS = 0x0803
 # ---------------------------------------------------------------- E1.20 RDM
 RDM_STARTCODE = 0xCC
 RDM_SUB_STARTCODE = 0x01
-RDM_KOPF_LAENGE = 24  # Startcode bis einschließlich PDL
+RDM_HEADER_LENGTH = 24  # Startcode bis einschließlich PDL
 RDM_MAX_PDL = 231
 RDM_ROOT_DEVICE = 0x0000
-RDM_ALLE_SUBDEVICES = 0xFFFF
+RDM_ALL_SUBDEVICES = 0xFFFF
 
 CC_DISCOVERY = 0x10
 CC_DISCOVERY_RESPONSE = 0x11
@@ -165,10 +165,10 @@ CC_GET_RESPONSE = 0x21
 CC_SET = 0x30
 CC_SET_RESPONSE = 0x31
 
-ANTWORT_ACK = 0x00
-ANTWORT_ACK_TIMER = 0x01
-ANTWORT_NACK = 0x02
-ANTWORT_ACK_OVERFLOW = 0x03
+RESPONSE_ACK = 0x00
+RESPONSE_ACK_TIMER = 0x01
+RESPONSE_NACK = 0x02
+RESPONSE_ACK_OVERFLOW = 0x03
 
 NACK_TEXT = {
     0x0000: "UNKNOWN_PID – Parameter nicht unterstützt",
@@ -223,12 +223,12 @@ PID_ENDPOINT_LABEL = 0x0905
 PID_RDM_TRAFFIC_ENABLE = 0x0906
 PID_DISCOVERY_STATE = 0x0907
 PID_ENDPOINT_RESPONDERS = 0x090B
-ENDPOINT_TYP_VIRTUELL = 0x00
-ENDPOINT_TYP_PHYSISCH = 0x01
-ENDPOINT_MODUS_TEXT = {0x00: "aus", 0x01: "Eingang", 0x02: "Ausgang"}
-DISCOVERY_STATE_TEXT = {0x00: "unvollständig", 0x01: "inkrementell", 0x02: "vollständig", 0x04: "nicht aktiv"}
+ENDPOINT_TYPE_VIRTUAL = 0x00
+ENDPOINT_TYPE_PHYSICAL = 0x01
+ENDPOINT_MODE_TEXT = {0x00: "aus", 0x01: "Eingang", 0x02: "Ausgang"}
+DISCOVERY_STATE_TEXT = {0x00: "unvollständig", 0x01: "incremental", 0x02: "vollständig", 0x04: "nicht aktiv"}
 
-PID_NAMEN = {
+PID_NAMES = {
     PID_SUPPORTED_PARAMETERS: "SUPPORTED_PARAMETERS",
     PID_DEVICE_INFO: "DEVICE_INFO",
     PID_PRODUCT_DETAIL_ID_LIST: "PRODUCT_DETAIL_ID_LIST",
@@ -256,7 +256,7 @@ PID_NAMEN = {
 }
 
 # Sensortypen (E1.20 Tabelle A-12)
-SENSORTYP_TEXT = {
+SENSOR_TYPE_TEXT = {
     0x00: "Temperatur", 0x01: "Spannung", 0x02: "Strom", 0x03: "Frequenz",
     0x04: "Widerstand", 0x05: "Leistung", 0x06: "Masse", 0x07: "Länge",
     0x08: "Fläche", 0x09: "Volumen", 0x0A: "Dichte", 0x0B: "Geschwindigkeit",
@@ -265,13 +265,13 @@ SENSORTYP_TEXT = {
     0x14: "Position Z", 0x15: "Winkelgeschwindigkeit", 0x16: "Lichtstärke",
     0x17: "Lichtstrom", 0x18: "Beleuchtungsstärke", 0x19: "Chrominanz Rot",
     0x1A: "Chrominanz Grün", 0x1B: "Chrominanz Blau", 0x1C: "Kontakte",
-    0x1D: "Speicher", 0x1E: "Elemente", 0x1F: "Luftfeuchte",
+    0x1D: "Memory", 0x1E: "Elemente", 0x1F: "Luftfeuchte",
     0x20: "Zähler 16 Bit", 0x7F: "Sonstiges",
 }
 
 # Für die Messung sinnvolle Sensortypen: beeinflussen Lichtausbeute/Spektrum
 # oder dokumentieren den Betriebszustand des Scheinwerfers während der Messung.
-SENSORTYPEN_MESSRELEVANT = frozenset({
+MEASUREMENT_RELEVANT_SENSOR_TYPES = frozenset({
     0x00,  # Temperatur (LED-Sperrschicht, Gehäuse, Treiber)
     0x01,  # Spannung (Versorgung)
     0x02,  # Strom
@@ -283,7 +283,7 @@ SENSORTYPEN_MESSRELEVANT = frozenset({
 })
 
 # Einheiten (E1.20 Tabelle A-13)
-EINHEIT_TEXT = {
+UNIT_TEXT = {
     0x00: "", 0x01: "°C", 0x02: "V DC", 0x03: "V AC (Spitze)", 0x04: "V AC (eff.)",
     0x05: "A DC", 0x06: "A AC (Spitze)", 0x07: "A AC (eff.)", 0x08: "Hz",
     0x09: "Ω", 0x0A: "W", 0x0B: "kg", 0x0C: "m", 0x0D: "m²", 0x0E: "m³",
@@ -293,7 +293,7 @@ EINHEIT_TEXT = {
 }
 
 # Präfixe (E1.20 Tabelle A-14) -> Zehnerexponent
-PRAEFIX_EXPONENT = {
+PREFIX_EXPONENT = {
     0x00: 0, 0x01: -1, 0x02: -2, 0x03: -3, 0x04: -6, 0x05: -9, 0x06: -12,
     0x07: -15, 0x08: -18, 0x09: -21, 0x0A: -24,
     0x11: 1, 0x12: 2, 0x13: 3, 0x14: 6, 0x15: 9, 0x16: 12, 0x17: 15,
@@ -301,7 +301,7 @@ PRAEFIX_EXPONENT = {
 }
 
 # Produktkategorien (Auswahl, obere Byte-Gruppen E1.20 Tabelle A-5)
-PRODUKTKATEGORIE_GRUPPE = {
+PRODUCT_CATEGORY_GROUP = {
     0x00: "nicht angegeben", 0x01: "Scheinwerfer", 0x02: "Scheinwerfer-Zubehör",
     0x03: "Projektor", 0x04: "Atmosphäre", 0x05: "Dimmer", 0x06: "Stromversorgung",
     0x07: "Szenerie", 0x08: "Datenverteilung", 0x09: "Pult/Steuerung",
@@ -309,4 +309,4 @@ PRODUKTKATEGORIE_GRUPPE = {
 }
 
 # Herstellerkennung für Prototypen (ESTA reserviert 0x7FF0–0x7FFF)
-ESTA_PROTOTYP_HERSTELLER = 0x7FF0
+ESTA_PROTOTYPE_MANUFACTURER = 0x7FF0
