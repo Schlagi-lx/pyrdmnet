@@ -8,11 +8,11 @@ Umfang V0.1:
 * RPT-Weiterleitung Controller → Gerät (auch Broadcast an alle Geräte bzw.
   alle Geräte eines Herstellers), Gerät → Controller (gezielt oder an alle)
 * Status UNKNOWN_RPT_UID und BROADCAST_COMPLETE vom Broker
+* Broker-eigener RDM-Responder (siehe :mod:`pyrdmnet.broker_responder`)
 * Heartbeat (Broker-NULL) und Verbindungsabbau bei Zeitüberschreitung
 * Ereignisprotokoll im Speicher und optional als JSONL-Datei
 
-Nicht enthalten (siehe ARCHITEKTUR.md): EPT-Clients, Broker-eigener
-RDM-Responder, Redirect, LLRP. DNS-SD-Anmeldung über :mod:`pyrdmnet.dnssd`.
+Nicht enthalten: EPT-Clients, Redirect, LLRP. DNS-SD-Anmeldung über :mod:`pyrdmnet.dnssd`.
 """
 
 from __future__ import annotations
@@ -29,7 +29,8 @@ from pathlib import Path
 
 from . import konstanten as K
 from . import pdu as P
-from .rdm import ALLE_CONTROLLER, Uid, hersteller_aus_mid_broadcast, ist_geraete_broadcast
+from .broker_responder import BrokerResponder, BrokerResponderDaten
+from .rdm import ALLE_CONTROLLER, RdmFormatFehler, RdmNachricht, Uid, hersteller_aus_mid_broadcast, ist_geraete_broadcast
 from .verbindung import Verbindung
 
 log = logging.getLogger("pyrdmnet.broker")
@@ -40,6 +41,8 @@ class BrokerKonfig:
     host: str = "127.0.0.1"
     port: int = 8888  # 0 = freien Port wählen
     scope: str = K.E133_STANDARD_SCOPE
+    suchdomain: str = K.E133_STANDARD_DOMAIN  # für RDM SEARCH_DOMAIN
+    geraete_label: str = "pyrdmnet Broker"  # für RDM DEVICE_LABEL
     uid: Uid = field(default_factory=lambda: Uid(K.ESTA_PROTOTYP_HERSTELLER, 0x00000001))
     cid: uuid.UUID = field(default_factory=uuid.uuid4)
     max_clients: int = 64
@@ -84,6 +87,10 @@ class RdmnetBroker:
         self.zaehler = collections.Counter()
         self.port: int | None = None
         self._mitschnitt_zeilen = 0
+        k = self.konfig
+        self.responder = BrokerResponder(
+            BrokerResponderDaten(uid=k.uid, scope=k.scope, suchdomain=k.suchdomain, geraete_label=k.geraete_label),
+            ereignis=self._ereignis)
 
     # ----------------------------------------------------------------- Lebenszyklus
     async def starten(self) -> None:
@@ -323,6 +330,9 @@ class RdmnetBroker:
                 self.zaehler["rpt_broadcast"] += 1
                 await self._status_an(client, k, K.RPT_STATUS_BROADCAST_COMPLETE)
                 return
+            if k.ziel == self.konfig.uid:
+                await self._an_broker_responder(client, rpt)
+                return
             ziel = self._clients.get(k.ziel)
             if ziel is None or ziel.ist_controller:
                 self.zaehler["rpt_unbekannte_uid"] += 1
@@ -346,6 +356,33 @@ class RdmnetBroker:
         else:
             self.zaehler["rpt_unbekannter_vektor"] += 1
             await self._status_an(client, k, K.RPT_STATUS_UNKNOWN_VECTOR)
+
+    async def _an_broker_responder(self, client: _Client, rpt: P.RptPdu) -> None:
+        """RPT-Request an die Broker-UID: vom eigenen RDM-Responder beantworten (E1.33 6.2)."""
+        k = rpt.kopf
+        if k.ziel_endpoint != K.E133_NULL_ENDPOINT:
+            await self._status_an(client, k, K.RPT_STATUS_UNKNOWN_ENDPOINT)
+            return
+        try:
+            nachrichten = P.lese_request_oder_notification(rpt.daten, K.VECTOR_REQUEST_RDM_CMD)
+            if len(nachrichten) != 1:
+                raise P.ProtokollFehler("RPT-Request muss genau einen RDM-Befehl enthalten")
+            roh = nachrichten[0]
+            anfrage = RdmNachricht.dekodieren(roh)
+        except (P.ProtokollFehler, RdmFormatFehler, ValueError):
+            await self._status_an(client, k, K.RPT_STATUS_INVALID_MESSAGE)
+            return
+        if anfrage.ziel != self.konfig.uid and not anfrage.ziel.ist_broadcast:
+            await self._status_an(client, k, K.RPT_STATUS_UNKNOWN_RDM_UID)
+            return
+        antwort = self.responder.beantworten(anfrage)
+        self.zaehler["broker_rdm_anfrage"] += 1
+        if antwort is None:
+            return
+        rkopf = P.RptKopf(K.VECTOR_RPT_NOTIFICATION, self.konfig.uid, K.E133_NULL_ENDPOINT, k.quelle,
+                          k.quelle_endpoint, k.sequenz)
+        await self._sicher_senden(client, client.verbindung.sende_rpt(
+            rkopf, P.baue_notification([roh, antwort.kodieren()])))
 
     async def _status_an(self, client: _Client, k: P.RptKopf, code: int) -> None:
         antwort = P.RptKopf(K.VECTOR_RPT_STATUS, k.ziel, k.ziel_endpoint, k.quelle, k.quelle_endpoint, k.sequenz)

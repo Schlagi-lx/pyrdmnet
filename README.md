@@ -10,7 +10,7 @@ Entstanden im Projekt GelMatch (Vermessung von Scheinwerfern der Veranstaltungst
 
 | | |
 |---|---|
-| Softwaretests | 99/99 bestanden (Python 3.10–3.13, nur Standardbibliothek) |
+| Softwaretests | 109/109 bestanden (Python 3.10–3.13, nur Standardbibliothek) |
 | Realtest | mit **LSS MasterPort 2** (Firmware 2.13) als RDMnet-Gateway und einem **ETC ColorSource PAR**: Broker-Suche per mDNS, Verbindung, Geräte finden, auslesen, Modus/Startadresse setzen und zurücklesen |
 | Andere Gateways/Geräte | nicht getestet – Rückmeldungen willkommen |
 
@@ -19,6 +19,7 @@ Kein Konformitätstest nach E1.33, keine Zertifizierung. Nutzung auf eigene Vera
 ## Was das Modul kann
 
 - **Broker** nach ANSI E1.33 (asyncio): Connect mit Scope-Prüfung, dynamische UIDs, Clientliste, RPT-Weiterleitung (auch Broadcast), Heartbeat, Paketmitschnitt als JSONL
+- **Broker-eigener RDM-Responder**: Controller können den Broker selbst abfragen (`COMPONENT_SCOPE`, `SEARCH_DOMAIN`, `BROKER_STATUS`, Gerätedaten). Scope und Zustand sind per RDM nicht änderbar.
 - **mDNS-Anmeldung** `_rdmnet._tcp` mit Scope-Subtyp – über Bonjour (`dns-sd`, auf macOS vorhanden), sonst optional über das Paket `zeroconf`
 - **Controller**: RDM GET, ACK_TIMER, ACK_OVERFLOW, NACK, Status-Meldungen
 - **Auslesen** über Gateway-Endpoints oder native RDMnet-Geräte: Hersteller, Modell, Firmware, DMX-Personalities mit Footprint, Startadresse, Sensoren, Betriebsstunden
@@ -42,7 +43,7 @@ Das Modul liest standardmäßig nur. Schreiben ist bewusst eng begrenzt:
 Voraussetzung: Python ab 3.10. Keine Installation weiterer Pakete nötig.
 
 ```bash
-git clone https://github.com/<konto>/pyrdmnet.git
+git clone https://github.com/Schlagi-lx/pyrdmnet.git
 cd pyrdmnet
 python3 -m unittest discover -s tests -t tests   # Tests
 python3 -m pyrdmnet demo                        # Offline-Durchlauf mit Simulator
@@ -99,7 +100,7 @@ Ein Moduswechsel braucht eine bestätigte Zuordnung RDM-Personality ↔ Modus (j
 | `konstanten.py` | Protokollkonstanten E1.20, E1.33, E1.37-7 |
 | `rdm.py`, `rdm_parameter.py` | RDM-Nachrichten, UID, Prüfsumme, Parameterdaten |
 | `pdu.py`, `verbindung.py` | ACN-TCP-Präambel, Root/Broker/RPT-PDUs, TCP-Verbindung |
-| `broker.py` | Broker |
+| `broker.py`, `broker_responder.py` | Broker, RDM-Responder des Brokers |
 | `klient.py`, `controller.py` | RPT-Client, Controller |
 | `auslesen.py`, `abgleich.py` | Geräte auslesen, Soll-Abgleich, Anwenden mit Rücklesen |
 | `speicher.py` | SQLite-Tabellen `rdm_*` |
