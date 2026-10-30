@@ -8,7 +8,7 @@ from pyrdmnet import settings_check as A
 from pyrdmnet import constants as C
 from pyrdmnet import rdm_params as R
 from pyrdmnet.readout import DeviceAddress
-from pyrdmnet.controller import (RdmResponseError, RdmNackError, RdmTimeoutError, WriteLockError)
+from pyrdmnet.controller import RdmNackError, RdmResponseError, RdmTimeoutError, WriteLockError, WritePolicy
 from pyrdmnet.client import RdmnetConnectionError
 from pyrdmnet.rdm import Uid
 
@@ -53,7 +53,8 @@ class TestController(NetworkTest):
         with self.assertRaises(WriteLockError):  # no write permission
             await self.c.rdm_set(a.rpt_uid, C.PID_DMX_START_ADDRESS, new, endpoint=1, rdm_dest=a.rdm_uid)
         self.c.write_enabled = True
-        with self.assertRaises(WriteLockError):  # PID not permitted
+        self.c.write_policy = WritePolicy.lab()
+        with self.assertRaises(WriteLockError):  # PID not permitted in the lab profile
             await self.c.rdm_set(a.rpt_uid, C.PID_DEVICE_LABEL, b"x", endpoint=1, rdm_dest=a.rdm_uid)
         self.assertEqual(self.fx.set_log, [])
         await self.c.rdm_set(a.rpt_uid, C.PID_DMX_START_ADDRESS, new, endpoint=1, rdm_dest=a.rdm_uid)
@@ -63,10 +64,30 @@ class TestController(NetworkTest):
                                  rdm_dest=a.rdm_uid)  # 510 + 6 - 1 > 512
         self.assertEqual(ctx.exception.reason, C.NR_DATA_OUT_OF_RANGE)
 
+    async def test_default_policy_allows_any_pid(self):
+        a = self.address
+        with self.assertRaises(WriteLockError):  # the per-session permission is still required
+            await self.c.rdm_set(a.rpt_uid, C.PID_DEVICE_LABEL, b"Stage left", endpoint=1, rdm_dest=a.rdm_uid)
+        self.c.write_enabled = True
+        await self.c.rdm_set(a.rpt_uid, C.PID_DEVICE_LABEL, b"Stage left", endpoint=1, rdm_dest=a.rdm_uid)
+        self.assertEqual(self.fx.device_label, "Stage left")
+        label = await self.c.rdm_get(a.rpt_uid, C.PID_DEVICE_LABEL, endpoint=1, rdm_dest=a.rdm_uid)
+        self.assertEqual(label, b"Stage left")
+
+    async def test_policy_without_session_permission(self):
+        a = self.address
+        self.c.write_policy = WritePolicy({C.PID_DEVICE_LABEL}, require_write_enabled=False)
+        await self.c.rdm_set(a.rpt_uid, C.PID_DEVICE_LABEL, b"Script", endpoint=1, rdm_dest=a.rdm_uid)
+        self.assertEqual(self.fx.device_label, "Script")
+        with self.assertRaises(WriteLockError):  # not in the own list
+            await self.c.rdm_set(a.rpt_uid, C.PID_DMX_START_ADDRESS, struct.pack(">H", 5), endpoint=1,
+                                 rdm_dest=a.rdm_uid)
+
     async def test_never_discovery(self):
         from pyrdmnet.rdm import RdmMessage
         n = RdmMessage(self.fx.uid, self.c.uid, 0, 1, C.CC_DISCOVERY, 0x0001)
         self.c.write_enabled = True
+        self.c.write_policy = WritePolicy(require_write_enabled=False)  # no policy unlocks discovery
         with self.assertRaises(WriteLockError):
             await self.c._send_and_wait(self.gateway.uid, 1, n, 1)
 

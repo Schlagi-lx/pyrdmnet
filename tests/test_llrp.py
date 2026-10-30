@@ -13,7 +13,7 @@ from pyrdmnet import constants as C
 from pyrdmnet import pdu as P
 from pyrdmnet import rdm_params as R
 from pyrdmnet.broker import BrokerConfig, RdmnetBroker
-from pyrdmnet.controller import RdmNackError, RdmTimeoutError, WriteLockError
+from pyrdmnet.controller import RdmNackError, RdmTimeoutError, WriteLockError, WritePolicy
 from pyrdmnet.llrp import (BROADCAST_CID, ComponentResponder, LlrpManager, LlrpNetwork, LlrpTarget, DiscoveredTarget,
                            ProbeRequest, ProbeReply, build_llrp, build_probe_request, build_probe_reply,
                            interface_index, read_llrp, read_probe_request, read_probe_reply, read_rdm_cmd)
@@ -188,10 +188,18 @@ class TestSingleTarget(LlrpTest):
         _, new = await self.m.set_scope(self.target, "lab", static_broker=("fd00::5", 8888))
         self.assertEqual((new.static_type, new.static_address), (C.E133_STATIC_CONFIG_IPV6, "[fd00::5]:8888"))
 
-    async def test_set_allowed_pids_only(self):
+    async def test_write_policy(self):
         self.m.write_enabled = True
-        with self.assertRaises(WriteLockError):
+        with self.assertRaises(RdmNackError) as ctx:  # default policy: sent, the target does not know the PID
             await self.m.rdm_set(self.target, C.PID_DEVICE_LABEL, b"x")
+        self.assertEqual(ctx.exception.reason, C.NR_UNKNOWN_PID)
+        self.m.write_policy = WritePolicy.llrp_lab()
+        rdm_before = self.t.counters["rdm"]
+        with self.assertRaises(WriteLockError) as ctx:  # lab profile: blocked before sending
+            await self.m.rdm_set(self.target, C.PID_DEVICE_LABEL, b"x")
+        self.assertIn("via LLRP", str(ctx.exception))
+        self.assertEqual(self.t.counters["rdm"], rdm_before)
+        await self.m.set_search_domain(self.target, "studio.")  # allowed in the lab profile
 
     async def test_timeout(self):
         await self.t.stop()

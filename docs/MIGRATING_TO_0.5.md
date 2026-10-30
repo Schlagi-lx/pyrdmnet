@@ -10,8 +10,9 @@ facade quick reference is the usual entry point (`pyrdmnet.facade`, formerly `py
 
 ## What changed
 
-Version 0.5 translates the whole project to English. Behaviour, protocol handling and safety rules are unchanged,
-but **every German name is gone and there are no compatibility aliases**:
+Version 0.5 translates the whole project to English. Behaviour and protocol handling are unchanged except for **one
+safety rule: which RDM SET commands are allowed** (see step 4a). **Every German name is gone and there are no
+compatibility aliases**:
 
 - module names, classes, functions, methods, attributes, constants and dataclass fields
 - status values of the settings check (`OK_UNBESTAETIGT` → `OK_UNCONFIRMED`, `ABWEICHUNG` → `DEVIATION`,
@@ -35,6 +36,11 @@ but **every German name is gone and there are no compatibility aliases**:
 4. **Rename the API calls.** Start with the facade (quick reference below), then the less common names from the
    full tables. Searching GelMatch for `pyrdmnet`, `RdmModul`, `RdmKonfig`, `EinstellungsErwartung` and `.fassade`
    finds most places.
+4a. **Keep the lab write restriction.** In 0.4, SET was hard-wired to DMX mode, start address and identify. In 0.5
+   the allowed PIDs are a `WritePolicy`, and the default allows any PID (still only after
+   `set_write_enabled(True)`). GelMatch should keep the old rule explicitly:
+   `RdmConfig(..., write_policy=WritePolicy.lab())` with `from pyrdmnet.controller import WritePolicy`
+   (for an `LlrpManager`: `write_policy=WritePolicy.llrp_lab()`).
 5. **Status values and dict keys.** Replace comparisons with German status strings by the constants in
    `pyrdmnet.settings_check` (`OK`, `OK_UNCONFIRMED`, `DEVIATION`, `NOT_CHECKABLE`) and update every access to
    result dicts / JSON (`profil["hersteller"]` → `profile["manufacturer"]` …). The key names equal the new field
@@ -369,7 +375,7 @@ Generated from the rename dictionary used for 0.5 (public names only).
 | `ENDPOINT_MODUS_TEXT` | `ENDPOINT_MODE_TEXT` |
 | `ENDPOINT_TYP_PHYSISCH` | `ENDPOINT_TYPE_PHYSICAL` |
 | `ENDPOINT_TYP_VIRTUELL` | `ENDPOINT_TYPE_VIRTUAL` |
-| `ERLAUBTE_SET_PIDS` | `ALLOWED_SET_PIDS` |
+| `ERLAUBTE_SET_PIDS` | `LAB_SET_PIDS` (use `WritePolicy.lab()`) |
 | `ESTA_PROTOTYP_HERSTELLER` | `ESTA_PROTOTYPE_MANUFACTURER` |
 | `LLRP_FILTER_NUR_BROKER` | `LLRP_FILTER_BROKERS_ONLY` |
 | `LLRP_FILTER_NUR_UNVERBUNDEN` | `LLRP_FILTER_CLIENT_CONN_INACTIVE` |

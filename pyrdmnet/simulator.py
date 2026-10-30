@@ -186,6 +186,10 @@ class SimFixture:
         elif pid == C.PID_IDENTIFY_DEVICE:
             if len(d) != 1 or d[0] > 1:
                 return nack(C.NR_FORMAT_ERROR)
+        elif pid == C.PID_DEVICE_LABEL:  # E1.20 10.5.4: up to 32 characters
+            if len(d) > 32:
+                return nack(C.NR_FORMAT_ERROR)
+            self.device_label = d.decode("ascii", errors="replace")
         else:
             return nack(C.NR_UNSUPPORTED_COMMAND_CLASS if pid in self.pids() else C.NR_UNKNOWN_PID)
         self.set_log.append((pid, bytes(d)))
