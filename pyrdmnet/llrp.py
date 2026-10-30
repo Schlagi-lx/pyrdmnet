@@ -256,8 +256,10 @@ def _udp_socket6(network: LlrpNetwork, port: int, group: str) -> socket.socket:
 
 
 class _Protocol(asyncio.DatagramProtocol):
-    def __init__(self, on_receive: Callable[[bytes, tuple], None]):
+    def __init__(self, on_receive: Callable[[bytes, tuple], None], family: str = ""):
         self.on_receive = on_receive
+        self.family = family
+        self.warned = False
 
     def datagram_received(self, data: bytes, addr: tuple) -> None:
         try:
@@ -266,7 +268,11 @@ class _Protocol(asyncio.DatagramProtocol):
             log.exception("Failed to process LLRP packet")
 
     def error_received(self, error: Exception) -> None:  # e.g. no route for one address family
-        log.debug("LLRP send/receive error: %s", error)
+        if not self.warned:  # once per socket: visible, but no flood on every probe round
+            self.warned = True
+            log.warning("LLRP over %s: send/receive error: %s", self.family, error)
+        else:
+            log.debug("LLRP over %s: send/receive error: %s", self.family, error)
 
 
 @dataclass(eq=False)
@@ -275,10 +281,10 @@ class _Channel:
 
     family: str  # "IPv4" / "IPv6"
     transport: asyncio.DatagramTransport
-    request: tuple[str, int]
-    response: tuple[str, int]
+    request: tuple
+    response: tuple
 
-    def send(self, data: bytes, destination: tuple[str, int]) -> None:
+    def send(self, data: bytes, destination: tuple) -> None:
         self.transport.sendto(data, destination)
 
 
@@ -306,9 +312,12 @@ async def _open_channels(network: LlrpNetwork, listen: str,
             errors.append(error)
             log.warning("LLRP over %s not available: %s", family, error)
             continue
-        channel = _Channel(family, None, (request, network.request_port), (response, network.response_port))
+        # IPv6 destinations as 4-tuples: the Windows proactor loop treats a 2-tuple as IPv4
+        tail = (0, 0) if family == "IPv6" else ()
+        channel = _Channel(family, None, (request, network.request_port, *tail),
+                           (response, network.response_port, *tail))
         channel.transport, _ = await loop.create_datagram_endpoint(
-            lambda c=channel: _Protocol(lambda data, addr: on_receive(data, addr, c)), sock=sock)
+            lambda c=channel: _Protocol(lambda data, addr: on_receive(data, addr, c), c.family), sock=sock)
         channels.append(channel)
     if not channels:
         raise errors[0]
