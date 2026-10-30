@@ -1,14 +1,14 @@
-"""Kommandozeile: python3 -m pyrdmnet <befehl>
+"""Command line: python3 -m pyrdmnet <command>
 
-Befehle:
-  broker     eigenen Broker starten (läuft bis Strg+C)
-  simulator  simuliertes RDMnet-Gerät mit einem Broker verbinden
-  auslesen   alle Geräte am Broker finden und auslesen (nur lesen)
-  livetest   Live-Test mit realem Gateway (z. B. LSS MasterPort), nur lesend
-  schreibtest  Modus/Startadresse am realen Scheinwerfer setzen, prüfen und zurückstellen
-  llrp       RDMnet-Komponenten ohne Broker finden (LLRP); Scope/Broker-Adresse setzen
-  demo       kompletter Offline-Durchlauf: Broker + Simulator + Auslesen +
-             Abgleich + Anwenden + 3 begleitete Messungen (alles SIMULATION)
+Commands:
+  broker     start our own broker (runs until Ctrl+C)
+  simulator  connect a simulated RDMnet device to a broker
+  read       find and read all devices on the broker (read only)
+  livetest   live test with a real gateway (e.g. LSS MasterPort), read only
+  writetest  set mode/start address on a real fixture, verify and restore
+  llrp       find RDMnet components without a broker (LLRP); set scope/broker address
+  demo       complete offline run: broker + simulator + readout +
+             settings check + apply + 3 accompanied measurements (all SIMULATION)
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ async def _broker(args) -> None:
     if args.dnssd:
         from .dnssd import DnssdRegistration
         reg = DnssdRegistration(args.scope, b.config.cid, b.config.uid, args.host, b.port)
-    print(f"Broker läuft auf {args.host}:{b.port}, Scope „{args.scope}“, UID {b.config.uid}. Strg+C beendet.")
+    print(f"Broker running on {args.host}:{b.port}, scope \"{args.scope}\", UID {b.config.uid}. Ctrl+C to quit.")
     try:
         await asyncio.Event().wait()
     finally:
@@ -57,10 +57,10 @@ async def _simulator(args) -> None:
     host, port = _host_port(args.broker)
     g = SimulatedGateway(scope=args.scope, native=args.native)
     uid = await g.connect(host, port)
-    print(f"Simulator verbunden als {uid} ({'nativ' if args.native else 'Gateway mit Scheinwerfer an Port 1'}). "
-          "Strg+C beendet.")
+    print(f"Simulator connected as {uid} ({'native' if args.native else 'gateway with fixture on port 1'}). "
+          "Ctrl+C to quit.")
     await g.disconnected.wait()
-    print("Getrennt:", g.disconnect_reason)
+    print("Disconnected:", g.disconnect_reason)
 
 
 async def _read_devices(args) -> int:
@@ -78,26 +78,26 @@ async def _read_devices(args) -> int:
     await c.disconnect()
     if args.json:
         Path(args.json).write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"JSON geschrieben: {args.json}")
+        print(f"JSON written: {args.json}")
     if not results:
-        print("Keine RDMnet-Geräte am Broker.")
+        print("No RDMnet devices on the broker.")
     return 0
 
 
 def _print_profile(p: dict, s: dict | None = None) -> None:
     di = p.get("device_info") or {}
     pa = p.get("personality_current") or {}
-    print(f"\nGerät {p['rdm_uid']} (über {p['rpt_uid']}, Endpoint {p['endpoint']})")
-    print(f"  {p['manufacturer']} – {p['model']} – Firmware {p['software_label']}")
-    print(f"  Modus {di.get('personality_current')}/{di.get('personality_count')} „{pa.get('description', '?')}“, "
-          f"Footprint {di.get('footprint')}, Startadresse {di.get('start_address')}, Universe {p.get('universe')}")
-    print(f"  Betriebsstunden {p.get('device_hours')}, Lampenstunden {p.get('lamp_hours')}")
+    print(f"\nDevice {p['rdm_uid']} (via {p['rpt_uid']}, endpoint {p['endpoint']})")
+    print(f"  {p['manufacturer']} - {p['model']} - firmware {p['software_label']}")
+    print(f"  Mode {di.get('personality_current')}/{di.get('personality_count')} \"{pa.get('description', '?')}\", "
+          f"footprint {di.get('footprint')}, start address {di.get('start_address')}, universe {p.get('universe')}")
+    print(f"  Device hours {p.get('device_hours')}, lamp hours {p.get('lamp_hours')}")
     if p.get("unavailable"):
-        print("  Nicht verfügbar:", ", ".join(f"{k} ({v})" for k, v in p["unavailable"].items()))
+        print("  Not available:", ", ".join(f"{k} ({v})" for k, v in p["unavailable"].items()))
     if s:
         for w in s["values"]:
             mark = "  !" if w["outside_normal"] else "   "
-            rel = "" if w["measurement_relevant"] else " (nicht messrelevant)"
+            rel = "" if w["measurement_relevant"] else " (not measurement-relevant)"
             print(f" {mark} Sensor {w['number']} {w['description']}: {w['value']:.3g} {w['unit_text']}{rel}")
 
 
@@ -109,13 +109,13 @@ def _livetest(args) -> int:
     expected = None
     if args.mode or args.footprint or args.start_address:
         if not (args.mode and args.footprint and args.start_address):
-            print("Für den Abgleich --modus, --footprint und --startadresse zusammen angeben.")
+            print("For the settings check, specify --mode, --footprint and --start-address together.")
             return 2
         expected = ExpectedSetting(args.mode, args.footprint, args.start_address, args.universe)
     k = LiveConfig(host=host, port=args.port, scope=args.scope, folder=Path(args.folder),
                    wait_for_devices_s=args.wait, find_responders_s=args.search_s, rdm_timeout_s=args.timeout,
                    dnssd=not args.no_mdns, expected=expected)
-    print(f"pyrdmnet {__version__} – LIVE-TEST, nur lesend (kein RDM SET)")
+    print(f"pyrdmnet {__version__} - LIVE TEST, read only (no RDM SET)")
     res = asyncio.run(LiveTest(k).run())
     return 0 if res.get("success") else 1
 
@@ -132,7 +132,7 @@ def _write_test(args) -> int:
                    dnssd=not args.no_mdns)
     wc = WriteConfig(args.target_mode, args.target_address, args.return_mode, args.return_address,
                        Uid.from_text(args.uid) if args.uid else None)
-    print(f"pyrdmnet {__version__} – SCHREIBTEST (RDM SET am realen Gerät, mit Checkliste)")
+    print(f"pyrdmnet {__version__} - WRITE TEST (RDM SET on the real device, with checklist)")
     res = asyncio.run(WriteTest(k, wc).run())
     return 0 if res.get("success") else 1
 
@@ -142,11 +142,11 @@ async def _llrp(args) -> int:
     from .rdm import Uid
     network = LlrpNetwork(adapter=args.adapter, ttl=args.ttl)
     if args.ttl > 1:
-        print("Hinweis: TTL > 1 – Antworten können aus anderen Netzsegmenten kommen.")
+        print("Note: TTL > 1 - responses may come from other network segments.")
     set_param = args.scope or args.domain
     async with LlrpManager(network) as m:
         filt = 0 if args.all else C.LLRP_FILTER_CLIENT_CONN_INACTIVE
-        print(f"LLRP-Suche über {args.adapter} ({'alle' if args.all else 'nur ohne Broker-Verbindung'}) …")
+        print(f"LLRP discovery via {args.adapter} ({'all' if args.all else 'only without broker connection'}) ...")
         targets = await m.discover(filter=filt)
         if args.uid:
             wanted = Uid.from_text(args.uid)
@@ -159,42 +159,42 @@ async def _llrp(args) -> int:
                 cs = await m.read_scope(z)
                 e.update(scope=cs.scope, static_broker=cs.static_address)
                 e["search_domain"] = await m.read_search_domain(z)
-            except Exception as error:  # einzelne Targets dürfen die Liste nicht abbrechen
+            except Exception as error:  # a single target must not abort the list
                 e["error"] = str(error)
             results.append(e)
             print(f"  {e['uid']}  {e['type']:<10} {e['address']:<15} HW {e['hardware']}  "
-                  f"Scope „{e.get('scope', '?')}“  Broker {e.get('static_broker') or 'per mDNS'}"
-                  f"  Domäne {e.get('search_domain', '?')}" + (f"  FEHLER: {e['error']}" if "error" in e else ""))
+                  f"Scope \"{e.get('scope', '?')}\"  Broker {e.get('static_broker') or 'via mDNS'}"
+                  f"  Domain {e.get('search_domain', '?')}" + (f"  ERROR: {e['error']}" if "error" in e else ""))
         if not targets:
-            print("Keine LLRP-Targets gefunden." + ("" if args.all else " (Mit --alle auch verbundene suchen.)"))
+            print("No LLRP targets found." + ("" if args.all else " (Use --all to include connected ones.)"))
         if args.json:
             Path(args.json).write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
         if not set_param:
             return 0
         if not args.uid or len(targets) != 1:
-            print("Zum Setzen genau ein Target mit --uid angeben.")
+            print("To set values, specify exactly one target with --uid.")
             return 2
         z = targets[0]
         broker = _host_port(args.broker) if args.broker else None
-        print(f"\nÄnderung an {z.uid} ({z.type_text}, {z.address}):")
+        print(f"\nChange on {z.uid} ({z.type_text}, {z.address}):")
         if args.scope:
-            print(f"  Scope → „{args.scope}“, Broker → {f'{broker[0]}:{broker[1]}' if broker else 'per mDNS'}")
+            print(f"  Scope -> \"{args.scope}\", broker -> {f'{broker[0]}:{broker[1]}' if broker else 'via mDNS'}")
         if args.domain:
-            print(f"  Suchdomäne → {args.domain}")
-        print("  Ein verbundenes Gerät trennt sich dabei vom Broker.")
+            print(f"  Search domain -> {args.domain}")
+        print("  A connected device will disconnect from the broker.")
         if not args.yes:
-            response = (await asyncio.to_thread(input, "Ausführen? [j/n] ")).strip().lower()
+            response = (await asyncio.to_thread(input, "Proceed? [y/n] ")).strip().lower()
             if response not in ("j", "ja", "y", "yes"):
-                print("Abgebrochen, nichts geändert.")
+                print("Aborted, nothing changed.")
                 return 1
         m.write_enabled = True
         if args.scope:
             old, new = await m.set_scope(z, args.scope, broker)
-            print(f"  Scope: „{old.scope}“ → „{new.scope}“ (zurückgelesen), Broker: "
-                  f"{old.static_address or 'mDNS'} → {new.static_address or 'mDNS'}")
+            print(f"  Scope: \"{old.scope}\" -> \"{new.scope}\" (read back), broker: "
+                  f"{old.static_address or 'mDNS'} -> {new.static_address or 'mDNS'}")
         if args.domain:
             old_d, new_d = await m.set_search_domain(z, args.domain)
-            print(f"  Suchdomäne: {old_d} → {new_d} (zurückgelesen)")
+            print(f"  Search domain: {old_d} -> {new_d} (read back)")
     return 0
 
 
@@ -202,52 +202,53 @@ def _demo(args) -> int:
     db = Path(args.db)
     if db.exists() and not args.keep:
         db.unlink()
-    print(f"pyrdmnet {__version__} – Offline-Demo (alle Gerätedaten SIMULATION)\n")
+    print(f"pyrdmnet {__version__} - offline demo (all device data SIMULATION)\n")
     module = RdmModule(RdmConfig(broker_port=0, db=db, heartbeat_interval_s=15))
     module.start()
     gateway = SimulatedGateway()
-    gateway.fixture.personality = 1  # absichtlich falscher Modus
-    gateway.fixture.start_address = 1  # absichtlich falsche Adresse
+    gateway.fixture.personality = 1  # deliberately wrong mode
+    gateway.fixture.start_address = 1  # deliberately wrong address
     module._run(gateway.connect("127.0.0.1", module.port))
     try:
         addresses = module.find_devices()
-        print("Gefunden:", ", ".join(map(str, addresses)))
+        print("Found:", ", ".join(map(str, addresses)))
         profile = module.read_device(addresses[0])
         _print_profile(profile.to_dict())
 
         expected = ExpectedSetting("Direct 6ch", footprint=6, start_address=100, universe=1)
         a = module.check_setting(profile, expected, reference="Demo")
-        print(f"\n1) Abgleich gegen Messplan: {a.status}, Messung erlaubt: {'Ja' if a.measurement_allowed else 'Nein'}")
+        print(f"\n1) Settings check against measurement plan: {a.status}, "
+              f"measurement allowed: {'yes' if a.measurement_allowed else 'no'}")
         for x in a.deviations + a.hints:
             print("   -", x)
 
-        print("\n2) Zuordnung bestätigen: Personality 2 = GDTF-Modus „Direct 6ch“ (Demo-Bestätigung)")
+        print("\n2) Confirm mapping: personality 2 = GDTF mode \"Direct 6ch\" (demo confirmation)")
         module.confirm_mapping(profile, "Direct 6ch", 2, confirmed_by="Demo")
 
-        print("3) Schreibfreigabe für diese Sitzung aktivieren und Einstellungen anwenden")
+        print("3) Enable write permission for this session and apply settings")
         module.set_write_enabled(True)
         app, profile, a = module.apply_setting(profile, expected, reference="Demo")
         for x in app.changes:
             print(f"   - {x['parameter']}: {x['old']} -> {x['new']}")
         for x in app.error:
-            print("   - FEHLER:", x)
-        print(f"   Neuer Abgleich: {a.status}, Messung erlaubt: {'Ja' if a.measurement_allowed else 'Nein'}")
+            print("   - ERROR:", x)
+        print(f"   New check: {a.status}, measurement allowed: {'yes' if a.measurement_allowed else 'no'}")
         module.set_write_enabled(False)
 
-        print("\n4) Drei begleitete Messungen (Sensor-Schnappschuss vor/nach)")
+        print("\n4) Three accompanied measurements (sensor snapshot before/after)")
         for i in range(1, 4):
             with module.accompany_measurement(profile, measurement_ref=f"DEMO-{i:03d}") as e:
                 pass
             v, n = e["before"], e["after"]
             temp = [w for w in n.values if w.type == 0x00]
-            print(f"   DEMO-{i:03d}: vor {v.status} ({len(v.values)} Werte), nach {n.status}; "
+            print(f"   DEMO-{i:03d}: before {v.status} ({len(v.values)} values), after {n.status}; "
                   + ", ".join(f"{w.description} {w.value:.1f} °C" for w in temp))
-        print("\nSensordaten zu DEMO-002 aus der Datenbank:")
+        print("\nSensor data for DEMO-002 from the database:")
         for z in module.store.sensor_values_for_measurement("DEMO-002"):
             print(f"   {z['phase']:5} {z['description']:15} {z['value']:8.2f} {z['unit']}")
-        print(f"\nDatenbank: {db.resolve()}")
+        print(f"\nDatabase: {db.resolve()}")
         status = module.broker_status()
-        print(f"Broker: {len(status['clients'])} Clients, Zähler {status['counters']}")
+        print(f"Broker: {len(status['clients'])} clients, counters {status['counters']}")
     finally:
         module._run(gateway.disconnect())
         module.stop()
@@ -345,7 +346,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "demo":
             return _demo(args)
     except KeyboardInterrupt:
-        print("\nBeendet.")
+        print("\nStopped.")
     return 0
 
 

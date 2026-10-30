@@ -1,4 +1,4 @@
-"""Einbindung: synchrone Fassade mit Datenbank, wie sie das Messlabor nutzt."""
+"""Integration: synchronous facade with database, as used by the measurement lab."""
 
 import contextlib
 import io
@@ -43,7 +43,7 @@ class TestFacade(unittest.TestCase):
             self.module.confirm_mapping(profile, "Direct 6ch", 9)
         self.module.confirm_mapping(profile, "Direct 6ch", 2, "Test")
         app, profile, a = self.module.apply_setting(profile, EXPECTED, reference="K1")
-        self.assertFalse(app.success)  # ohne Schreibfreigabe
+        self.assertFalse(app.success)  # without write permission
         self.module.set_write_enabled(True)
         app, profile, a = self.module.apply_setting(profile, EXPECTED, reference="K1")
         self.assertTrue(app.success, app.error)
@@ -57,7 +57,7 @@ class TestFacade(unittest.TestCase):
         self.assertEqual([w["phase"] for w in values], ["before"] * 3 + ["after"] * 3)
 
         db = sqlite3.connect(self.db)
-        self.assertEqual(db.execute("SELECT COUNT(*) FROM rdm_device").fetchone()[0], 3)  # Erstauslesung + je eine nach beiden Anwendeversuchen
+        self.assertEqual(db.execute("SELECT COUNT(*) FROM rdm_device").fetchone()[0], 3)  # initial readout + one after each of the two apply attempts
         self.assertEqual(db.execute("SELECT COUNT(*) FROM rdm_sensor_definition").fetchone()[0], 12)
         changed = db.execute("SELECT parameter, old, new, success FROM rdm_change ORDER BY id").fetchall()
         self.assertEqual(changed, [("NONE", None, changed[0][2], 0), ("DMX_PERSONALITY", "1", "2", 1),
@@ -85,7 +85,7 @@ class TestFacade(unittest.TestCase):
     def test_reconnect_after_abort(self):
         (dmx_addr,) = self.module.find_devices()
         self.module._run(self.module.controller.disconnect())
-        profile = self.module.read_device(dmx_addr)  # verbindet selbstständig neu
+        profile = self.module.read_device(dmx_addr)  # reconnects by itself
         self.assertIsNotNone(profile.device_info)
 
     def test_write_permission_survives_reconnect(self):
@@ -100,7 +100,7 @@ class TestStoreSchema(unittest.TestCase):
         db = sqlite3.connect(":memory:")
         db.execute("CREATE TABLE measurement (id INTEGER PRIMARY KEY)")
         RdmStore(db)
-        RdmStore(db)  # zweites Öffnen ändert nichts
+        RdmStore(db)  # opening a second time changes nothing
         tables = {z[0] for z in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         db.close()
         self.assertTrue({"measurement", "rdm_device", "rdm_sensor_value", "rdm_personality_mapping"} <= tables)
@@ -119,7 +119,7 @@ class TestCommandLine(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             with contextlib.redirect_stdout(io.StringIO()) as reader:
                 self.assertEqual(cli_main(["demo", "--db", str(Path(t) / "d.sqlite")]), 0)
-            self.assertIn("Neuer Abgleich: OK", reader.getvalue())
+            self.assertIn("New check: OK", reader.getvalue())
 
 
 class TestDnssd(unittest.TestCase):

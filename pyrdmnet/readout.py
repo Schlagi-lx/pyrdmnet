@@ -1,4 +1,4 @@
-"""Geräte finden, vollständig auslesen und Sensor-Schnappschüsse erstellen."""
+"""Find devices, read them out completely and take sensor snapshots."""
 
 from __future__ import annotations
 
@@ -18,14 +18,14 @@ def now_utc() -> str:
 
 @dataclass(frozen=True)
 class DeviceAddress:
-    """Wie ein RDM-Responder über RDMnet erreicht wird."""
+    """How an RDM responder is reached via RDMnet."""
 
-    rpt_uid: Uid  # RDMnet-Gerät (Gateway oder natives Gerät)
-    endpoint: int  # 0 = Default-Responder
-    rdm_uid: Uid  # RDM-Responder (Scheinwerfer)
+    rpt_uid: Uid  # RDMnet device (gateway or native device)
+    endpoint: int  # 0 = default responder
+    rdm_uid: Uid  # RDM responder (fixture)
 
     def __str__(self) -> str:
-        return f"{self.rdm_uid} (über {self.rpt_uid}, Endpoint {self.endpoint})"
+        return f"{self.rdm_uid} (via {self.rpt_uid}, endpoint {self.endpoint})"
 
 
 @dataclass
@@ -42,8 +42,8 @@ class DeviceProfile:
     sensors: list[R.SensorDefinition] = field(default_factory=list)
     device_hours: int | None = None
     lamp_hours: int | None = None
-    universe: int | None = None  # nur wenn das Gateway ENDPOINT_TO_UNIVERSE liefert
-    unavailable: dict[str, str] = field(default_factory=dict)  # PID -> Grund
+    universe: int | None = None  # only if the gateway provides ENDPOINT_TO_UNIVERSE
+    unavailable: dict[str, str] = field(default_factory=dict)  # PID -> reason
 
     @property
     def personality_current(self) -> R.Personality | None:
@@ -117,7 +117,7 @@ class SensorSnapshot:
 
 
 class DeviceReader:
-    """Lese-Operationen auf einem verbundenen Controller."""
+    """Read operations on a connected controller."""
 
     def __init__(self, controller: RdmnetController, timeout_s: float = 3.0):
         self.c = controller
@@ -127,9 +127,9 @@ class DeviceReader:
         return await self.c.rdm_get(a.rpt_uid, pid, data, endpoint=a.endpoint, rdm_dest=a.rdm_uid,
                                     timeout_s=self.timeout_s)
 
-    # ----------------------------------------------------------------- Finden
+    # ----------------------------------------------------------------- discovery
     async def find_devices(self) -> list[DeviceAddress]:
-        """Alle RDM-Responder hinter allen RDMnet-Geräten (Default-Responder + Endpoints)."""
+        """All RDM responders behind all RDMnet devices (default responder + endpoints)."""
         await self.c.client_list(refresh=True)
         addresses: list[DeviceAddress] = []
         for e in self.c.devices():
@@ -137,7 +137,7 @@ class DeviceReader:
                 _changed, eps = R.read_endpoint_list(await self.c.rdm_get(e.uid, C.PID_ENDPOINT_LIST,
                                                                            timeout_s=self.timeout_s))
             except RdmNackError:
-                eps = []  # natives Gerät ohne Endpoints
+                eps = []  # native device without endpoints
             except RdmError:
                 continue
             physical = [ep for ep in eps if ep.number != 0]
@@ -153,7 +153,7 @@ class DeviceReader:
                 addresses.extend(DeviceAddress(e.uid, ep.number, u) for u in uids)
         return addresses
 
-    # ----------------------------------------------------------------- Auslesen
+    # ----------------------------------------------------------------- readout
     async def profile(self, a: DeviceAddress) -> DeviceProfile:
         p = DeviceProfile(a, now_utc())
 
@@ -168,7 +168,7 @@ class DeviceReader:
 
         d = await attempt(C.PID_DEVICE_INFO)
         if d is None:
-            return p  # Gerät antwortet nicht sinnvoll – Profil bleibt leer, Gründe stehen drin
+            return p  # device does not respond meaningfully - profile stays empty, reasons are recorded
         p.device_info = R.read_device_info(d)
         if (d := await attempt(C.PID_SUPPORTED_PARAMETERS)) is not None:
             p.supported_pids = R.read_pid_list(d)
@@ -196,7 +196,7 @@ class DeviceReader:
         return p
 
     async def gateway_ports(self, rpt_uid: Uid, supported: list[int] | None = None) -> list[dict]:
-        """Übersicht aller Ports eines Gateways (E1.37-7): Typ, Modus, Universe, Name, Responder."""
+        """Overview of all ports of a gateway (E1.37-7): type, mode, universe, name, responders."""
         def supports(pid: int) -> bool:
             return not supported or pid in supported
 
@@ -213,7 +213,7 @@ class DeviceReader:
                     "mode": None, "universe": None, "name": None, "rdm_active": None, "discovery": None,
                     "responder": []}
             if supports(C.PID_ENDPOINT_MODE) and (d := await get(C.PID_ENDPOINT_MODE, ep.number)) and len(d) >= 3:
-                port["mode"] = C.ENDPOINT_MODE_TEXT.get(d[2], f"Modus {d[2]}")
+                port["mode"] = C.ENDPOINT_MODE_TEXT.get(d[2], f"Mode {d[2]}")
             if supports(C.PID_ENDPOINT_TO_UNIVERSE) and (d := await get(C.PID_ENDPOINT_TO_UNIVERSE, ep.number)) \
                     and len(d) == 4:
                 port["universe"] = R.read_endpoint_universe(d)[1]
@@ -224,7 +224,7 @@ class DeviceReader:
                 port["rdm_active"] = bool(d[2])
             if supports(C.PID_DISCOVERY_STATE) and (d := await get(C.PID_DISCOVERY_STATE, ep.number)) and len(d) >= 5:
                 count = int.from_bytes(d[2:4], "big")
-                port["discovery"] = f"{C.DISCOVERY_STATE_TEXT.get(d[4], d[4])}, {count} Geräte"
+                port["discovery"] = f"{C.DISCOVERY_STATE_TEXT.get(d[4], d[4])}, {count} devices"
             if (d := await get(C.PID_ENDPOINT_RESPONDERS, ep.number)) is not None:
                 port["responder"] = [str(u) for u in R.read_endpoint_responders(d)[2]]
             ports.append(port)
@@ -233,7 +233,7 @@ class DeviceReader:
     async def read_setting(self, a: DeviceAddress) -> R.DeviceInfo:
         return R.read_device_info(await self._get(a, C.PID_DEVICE_INFO))
 
-    # ----------------------------------------------------------------- Sensoren
+    # ----------------------------------------------------------------- sensors
     async def sensor_snapshot(self, a: DeviceAddress, sensors: list[R.SensorDefinition],
                                    all_sensors: bool = False) -> SensorSnapshot:
         t0 = time.monotonic()
@@ -247,7 +247,7 @@ class DeviceReader:
                 s.error.append(f"Sensor {sd.number} ({sd.description}): {f}")
                 continue
             if w.number != sd.number:
-                s.error.append(f"Sensor {sd.number}: Antwort für Sensor {w.number}")
+                s.error.append(f"Sensor {sd.number}: response for sensor {w.number}")
                 continue
             s.values.append(SensorReading(
                 number=sd.number, description=sd.description, type=sd.type, type_text=sd.type_text,

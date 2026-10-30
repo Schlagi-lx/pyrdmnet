@@ -1,12 +1,12 @@
-"""Simuliertes RDMnet-Gerät für Offline-Tests.
+"""Simulated RDMnet device for offline tests.
 
-Zwei Betriebsarten:
-* Gateway (Standard): RDMnet-Gerät mit Default-Responder (Endpoint 0) und
-  einem physischen Port (Endpoint 1), an dem ein simulierter RDM-Scheinwerfer hängt.
-* Nativ: Der Scheinwerfer ist selbst das RDMnet-Gerät (Endpoint 0).
+Two operating modes:
+* Gateway (default): RDMnet device with a default responder (endpoint 0) and
+  one physical port (endpoint 1) to which a simulated RDM fixture is connected.
+* Native: the fixture itself is the RDMnet device (endpoint 0).
 
-Alle Werte sind SIMULATION. Hersteller/Modell sind bewusst generisch und
-stellen kein reales Gerät dar.
+All values are SIMULATION. Manufacturer/model are deliberately generic and
+do not represent a real device.
 """
 
 from __future__ import annotations
@@ -27,8 +27,8 @@ from .rdm import RdmFormatError, RdmMessage, Uid, is_device_broadcast
 @dataclass
 class SimSensor:
     definition: R.SensorDefinition
-    start_value: float  # in physikalischer Einheit
-    rise_per_s: float = 0.0  # einfache lineare Drift (nur Simulation)
+    start_value: float  # in physical unit
+    rise_per_s: float = 0.0  # simple linear drift (simulation only)
     end_value: float | None = None
 
     def raw_value(self, seconds: float) -> int:
@@ -41,7 +41,7 @@ class SimSensor:
 
 @dataclass
 class SimFixture:
-    """Simulierter RDM-Responder (Scheinwerfer)."""
+    """Simulated RDM responder (fixture)."""
 
     uid: Uid
     manufacturer_label: str = "pyrdmnet Simulator"
@@ -50,7 +50,7 @@ class SimFixture:
     device_label: str = "Test bench 1"
     model_id: int = 0x0101
     software_version_id: int = 0x00010000
-    product_category: int = 0x0101  # Scheinwerfer, fest
+    product_category: int = 0x0101  # fixture, fixed
     personalities: list[R.Personality] = field(default_factory=lambda: [
         R.Personality(1, 4, "Direct 4ch"),
         R.Personality(2, 6, "Direct 6ch"),
@@ -59,14 +59,14 @@ class SimFixture:
     personality: int = 2
     start_address: int = 100
     device_hours: int = 1234
-    lamp_hours: int | None = None  # LED: nicht unterstützt -> NACK
+    lamp_hours: int | None = None  # LED: not supported -> NACK
     sensors: list[SimSensor] = field(default_factory=list)
     write_protect: bool = False
-    ack_timer_once: set = field(default_factory=set)  # PIDs, die einmal ACK_TIMER liefern
-    overflow_pids: set = field(default_factory=set)  # PIDs, deren Antwort geteilt wird
+    ack_timer_once: set = field(default_factory=set)  # PIDs that return ACK_TIMER once
+    overflow_pids: set = field(default_factory=set)  # PIDs whose response is split
     start: float = field(default_factory=time.monotonic)
     set_log: list[tuple[int, bytes]] = field(default_factory=list)
-    extra_pids: list[int] = field(default_factory=list)  # z. B. Endpoint-PIDs beim Gateway
+    extra_pids: list[int] = field(default_factory=list)  # e.g. endpoint PIDs on the gateway
 
     def __post_init__(self) -> None:
         if not self.sensors:
@@ -77,7 +77,7 @@ class SimFixture:
                 SimSensor(R.SensorDefinition(3, 0x1D, 0x1C, 0x13, 0, 4096, 0, 4096, 0x00, "Memory"), 512000.0),
             ]
 
-    # --- Hilfen
+    # --- helpers
     def _p(self, num: int) -> R.Personality | None:
         return next((p for p in self.personalities if p.number == num), None)
 
@@ -95,7 +95,7 @@ class SimFixture:
             base.append(C.PID_LAMP_HOURS)
         return base + list(self.extra_pids)
 
-    # --- Antwortlogik
+    # --- response logic
     def respond(self, a: RdmMessage) -> RdmMessage | None:
         if a.dest != self.uid and not a.dest.is_broadcast:
             return None
@@ -110,7 +110,7 @@ class SimFixture:
         if isinstance(data, int):
             return a.response(C.RESPONSE_NACK, struct.pack(">H", data))
         if a.pid in self.overflow_pids and len(data) > 4:
-            # Teil 1 als ACK_OVERFLOW, beim nächsten GET der Rest
+            # part 1 as ACK_OVERFLOW, the rest on the next GET
             self.overflow_pids.discard(a.pid)
             self._overflow_rest = (a.pid, data[4:])
             return a.response(C.RESPONSE_ACK_OVERFLOW, data[:4])
@@ -193,7 +193,7 @@ class SimFixture:
 
 
 class SimulatedGateway(RptClient):
-    """RDMnet-Gerät (RPT Device) mit simuliertem Scheinwerfer."""
+    """RDMnet device (RPT device) with a simulated fixture."""
 
     def __init__(self, uid: Uid | None = None, scope: str = C.E133_DEFAULT_SCOPE, native: bool = False,
                  fixture: SimFixture | None = None, universe: int = 1, response_delay_s: float = 0.0,
@@ -203,7 +203,7 @@ class SimulatedGateway(RptClient):
         self.native = native
         self.universe = universe
         self.delay = response_delay_s
-        self.mute = False  # Test: antwortet nicht (Zeitüberschreitung beim Controller)
+        self.mute = False  # test: does not respond (timeout at the controller)
         if native:
             self.fixture = fixture or SimFixture(uid=uid)
         else:
@@ -230,7 +230,7 @@ class SimulatedGateway(RptClient):
             await self._status(k, C.RPT_STATUS_INVALID_MESSAGE)
             return
         if is_device_broadcast(k.dest) or request.dest.is_broadcast:
-            return  # E1.20: auf Broadcasts wird nicht geantwortet
+            return  # E1.20: broadcasts are not answered
         response = self._responder_reply(k.dest_endpoint, request)
         if isinstance(response, int):
             await self._status(k, response)

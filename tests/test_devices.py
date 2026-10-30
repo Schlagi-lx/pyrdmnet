@@ -1,4 +1,4 @@
-"""Controller (GET/SET-Regeln), Geräteauslesung, Sensoren, Abgleich und Anwenden."""
+"""Controller (GET/SET rules), device readout, sensors, settings check and apply."""
 
 import asyncio
 import struct
@@ -50,10 +50,10 @@ class TestController(NetworkTest):
     async def test_set_rules(self):
         a = self.address
         new = struct.pack(">H", 200)
-        with self.assertRaises(WriteLockError):  # keine Freigabe
+        with self.assertRaises(WriteLockError):  # no write permission
             await self.c.rdm_set(a.rpt_uid, C.PID_DMX_START_ADDRESS, new, endpoint=1, rdm_dest=a.rdm_uid)
         self.c.write_enabled = True
-        with self.assertRaises(WriteLockError):  # PID nicht freigegeben
+        with self.assertRaises(WriteLockError):  # PID not permitted
             await self.c.rdm_set(a.rpt_uid, C.PID_DEVICE_LABEL, b"x", endpoint=1, rdm_dest=a.rdm_uid)
         self.assertEqual(self.fx.set_log, [])
         await self.c.rdm_set(a.rpt_uid, C.PID_DMX_START_ADDRESS, new, endpoint=1, rdm_dest=a.rdm_uid)
@@ -99,7 +99,7 @@ class TestReadGateway(NetworkTest):
         self.assertEqual(len(p.sensors), 4)
         self.assertEqual(p.universe, 1)
         self.assertEqual(p.device_hours, 1234)
-        self.assertIsNone(p.lamp_hours)  # nicht in SUPPORTED_PARAMETERS -> gar nicht abgefragt
+        self.assertIsNone(p.lamp_hours)  # not in SUPPORTED_PARAMETERS -> not queried at all
         self.assertNotIn("LAMP_HOURS", p.unavailable)
         d = p.to_dict()
         self.assertEqual(d["device_info"]["product_category_text"], "Scheinwerfer")
@@ -117,22 +117,22 @@ class TestReadGateway(NetworkTest):
         network = s.values[2]
         self.assertAlmostEqual(network.value, 230.4)
         self.assertEqual(network.raw, 2304)
-        self.assertIsNone(network.lowest)  # Gerät meldet keine Min/Max-Unterstützung
+        self.assertIsNone(network.lowest)  # device reports no min/max support
         self.assertFalse(network.outside_normal)
         all = await self.reader.sensor_snapshot(self.address, p.sensors, all_sensors=True)
         self.assertEqual(len(all.values), 4)
-        self.assertEqual(all.values[3].value, 512000.0)  # Präfix kilo
+        self.assertEqual(all.values[3].value, 512000.0)  # prefix kilo
 
     async def test_sensor_temperature_rises(self):
         p = await self.reader.profile(self.address)
-        self.fx.start -= 10  # 10 s Betrieb simulieren: 0,5 K/s
+        self.fx.start -= 10  # simulate 10 s of operation: 0.5 K/s
         s = await self.reader.sensor_snapshot(self.address, p.sensors)
         self.assertGreaterEqual(s.values[0].value, 30.0)
 
     async def test_sensor_outside_normal(self):
-        self.fx.sensors[1].definition.normal_max = 40  # vor dem Auslesen: Profil kennt den Normalbereich
+        self.fx.sensors[1].definition.normal_max = 40  # before readout: the profile knows the normal range
         p = await self.reader.profile(self.address)
-        self.fx.start -= 1000  # LED-Endwert 68 °C (Normal bis 85), Gehäuse-Endwert 41 °C (Normal bis 40)
+        self.fx.start -= 1000  # LED end value 68 °C (normal up to 85), housing end value 41 °C (normal up to 40)
         s = await self.reader.sensor_snapshot(self.address, p.sensors)
         self.assertTrue(s.values[1].outside_normal)
         self.assertFalse(s.values[0].outside_normal)
@@ -180,7 +180,7 @@ class TestSettingsCheck(NetworkTest):
         self.assertEqual(e.status, A.OK_UNCONFIRMED)
         self.assertTrue(e.measurement_allowed)
         self.assertFalse(A.check(p, EXPECTED, strict=True).measurement_allowed)
-        self.assertIn("2 „Direct 6ch“", e.hints[0])
+        self.assertIn('2 "Direct 6ch"', e.hints[0])
         e = A.check(p, EXPECTED, self._mapping(p))
         self.assertEqual((e.status, e.measurement_allowed, e.target_personality), (A.OK, True, 2))
 
@@ -188,10 +188,10 @@ class TestSettingsCheck(NetworkTest):
         self.fx.start_address = 1
         self.gateway.universe = 3
         p = await self._profile()
-        e = A.check(p, EXPECTED, self._mapping(p, num=3))  # bestätigt: 3, Gerät hat 2
+        e = A.check(p, EXPECTED, self._mapping(p, num=3))  # confirmed: 3, device has 2
         self.assertEqual(e.status, A.DEVIATION)
         self.assertFalse(e.measurement_allowed)
-        self.assertEqual(len(e.deviations), 3)  # Adresse, Universe, Personality
+        self.assertEqual(len(e.deviations), 3)  # address, universe, personality
 
     async def test_mapping_other_firmware_not_valid(self):
         p = await self._profile()
@@ -216,7 +216,7 @@ class TestSettingsCheck(NetworkTest):
         self.assertEqual(A.check(await self._profile(), EXPECTED, self._mapping(p)).status, A.OK)
 
     async def test_apply_address_only_without_mapping(self):
-        self.fx.start_address = 7  # Footprint stimmt -> Adresse darf ohne Zuordnung gesetzt werden
+        self.fx.start_address = 7  # footprint matches -> address may be set without mapping
         p = await self._profile()
         self.c.write_enabled = True
         res = await A.apply(self.c, self.address, p, EXPECTED, None)
@@ -260,7 +260,7 @@ class TestSettingsCheck(NetworkTest):
         self.fx.personality = 1
         p = await self._profile()
         self.c.write_enabled = True
-        res = await A.apply(self.c, self.address, p, EXPECTED, self._mapping(p, num=3))  # Nr. 3 hat 5 Kanäle
+        res = await A.apply(self.c, self.address, p, EXPECTED, self._mapping(p, num=3))  # no. 3 has 5 channels
         self.assertFalse(res.success)
         self.assertEqual(self.fx.set_log, [])
 
@@ -270,13 +270,13 @@ class TestSettingsCheck(NetworkTest):
         self.c.write_enabled = True
         old = self.fx._set
 
-        def ignores(a):  # Gerät bestätigt, übernimmt aber nichts
+        def ignores(a):  # device acknowledges but applies nothing
             return a.response(C.RESPONSE_ACK)
         self.fx._set = ignores
         res = await A.apply(self.c, self.address, p, EXPECTED, self._mapping(p))
         self.fx._set = old
         self.assertFalse(res.success)
-        self.assertIn("Rücklesen: Startadresse 7", res.error[0])
+        self.assertIn("Read back: start address 7", res.error[0])
 
 
 if __name__ == "__main__":

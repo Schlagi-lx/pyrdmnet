@@ -1,26 +1,26 @@
-"""Synchrone Einbindungsschnittstelle für das Messlabor.
+"""Synchronous integration interface for the measurement lab.
 
-Das Messlabor arbeitet synchron; RDMnet läuft intern in einem eigenen
-asyncio-Thread. Alle Methoden blockieren bis zum Ergebnis.
+The measurement lab works synchronously; RDMnet runs internally in its own
+asyncio thread. All methods block until the result is available.
 
-Typischer Ablauf je Kampagne::
+Typical flow per campaign::
 
-    modul = RdmModul(RdmKonfig(broker_host=adapter_ip, db=messdb_verbindung))
-    modul.starten()
-    adressen = modul.geraete_finden()
-    profil = modul.geraet_auslesen(adressen[0])
-    erwartung = EinstellungsErwartung("Direct 6ch", footprint=6, startadresse=100, universe=1)
-    abgleich = modul.einstellung_pruefen(profil, erwartung, bezug="Kampagne 7")
-    if not abgleich.messung_erlaubt:
-        modul.schreibfreigabe_setzen(True)          # nach Checkliste vor Ort
-        anw, profil, abgleich = modul.einstellung_anwenden(profil, erwartung, bezug="Kampagne 7")
-    for messung_id in ...:
-        with modul.messung_begleiten(profil, messung_ref=str(messung_id)):
-            ...  # Spektralmessung
-    modul.stoppen()
+    module = RdmModule(RdmConfig(broker_host=adapter_ip, db=measurement_db_connection))
+    module.start()
+    addresses = module.find_devices()
+    profile = module.read_device(addresses[0])
+    expected = ExpectedSetting("Direct 6ch", footprint=6, start_address=100, universe=1)
+    check = module.check_setting(profile, expected, reference="Campaign 7")
+    if not check.measurement_allowed:
+        module.set_write_enabled(True)          # after the on-site checklist
+        app, profile, check = module.apply_setting(profile, expected, reference="Campaign 7")
+    for measurement_id in ...:
+        with module.accompany_measurement(profile, measurement_ref=str(measurement_id)):
+            ...  # spectral measurement
+    module.stop()
 
-RDM-Fehler während ``messung_begleiten`` werden protokolliert und gespeichert,
-aber nie an die Messung weitergereicht.
+RDM errors during ``accompany_measurement`` are logged and stored,
+but never passed on to the measurement.
 """
 
 from __future__ import annotations
@@ -41,29 +41,29 @@ from .controller import RdmnetController
 from .rdm import Uid
 from .storage import RdmStore
 
-log = logging.getLogger("pyrdmnet.fassade")
+log = logging.getLogger("pyrdmnet.facade")
 
 
 @dataclass
 class RdmConfig:
-    internal_broker: bool = True  # eigenen Broker in diesem Prozess starten
-    broker_host: str = "127.0.0.1"  # IP des gewählten Netzwerkadapters
-    broker_port: int = 8888  # 0 = frei wählen (nur mit internem Broker sinnvoll)
+    internal_broker: bool = True  # start our own broker in this process
+    broker_host: str = "127.0.0.1"  # IP of the selected network adapter
+    broker_port: int = 8888  # 0 = choose freely (only useful with the internal broker)
     scope: str = C.E133_DEFAULT_SCOPE
     broker_uid: Uid = field(default_factory=lambda: Uid(C.ESTA_PROTOTYPE_MANUFACTURER, 0x00000001))
-    controller_uid: Uid | None = None  # None = dynamische UID anfordern
+    controller_uid: Uid | None = None  # None = request a dynamic UID
     timeout_s: float = 3.0
-    all_sensors: bool = False  # False: nur messrelevante Sensortypen
-    strict: bool = False  # True: nur Abgleich OK erlaubt eine Messung
+    all_sensors: bool = False  # False: only measurement-relevant sensor types
+    strict: bool = False  # True: only settings check OK allows a measurement
     db: str | Path | sqlite3.Connection | None = None
     event_file: Path | None = None
-    dnssd: bool = False  # Broker per mDNS anmelden (benötigt zeroconf)
+    dnssd: bool = False  # register the broker via mDNS (requires zeroconf)
     heartbeat_interval_s: float = C.E133_HEARTBEAT_INTERVAL_S
     heartbeat_timeout_s: float = C.E133_HEARTBEAT_TIMEOUT_S
-    # V0.21.12 (S11): RDM über Art-Net statt RDMnet (kein Broker); Ziel = Node-IP oder Broadcast
+    # V0.21.12 (S11): RDM over Art-Net instead of RDMnet (no broker); target = node IP or broadcast
     transport: str = "RDMNET"  # "RDMNET" | "ARTNET"
     artnet_target_ip: str | None = None
-    artnet_port_addresses: tuple = tuple(range(32))  # Net 0, Universen 1–32 in GelMatch-Zählung
+    artnet_port_addresses: tuple = tuple(range(32))  # Net 0, universes 1-32 in GelMatch numbering
     artnet_bind: tuple = ("0.0.0.0", 6454)
     artnet_target_port: int = 6454
     artnet_tod_wait_s: float = 2.0
@@ -81,10 +81,10 @@ class RdmModule:
         self._device_ids: dict[Uid, int] = {}
         self.port: int | None = None
 
-    # ----------------------------------------------------------------- Thread
+    # ----------------------------------------------------------------- thread
     def _run(self, coro, timeout: float | None = None):
         if self._loop is None:
-            raise RuntimeError("RdmModul nicht gestartet")
+            raise RuntimeError("RdmModule not started")
         return asyncio.run_coroutine_threadsafe(coro, self._loop).result(timeout)
 
     def start(self) -> None:
@@ -94,7 +94,7 @@ class RdmModule:
         self._thread = threading.Thread(target=self._loop.run_forever, name="pyrdmnet", daemon=True)
         self._thread.start()
         if self.config.db is not None:
-            # SQLite-Verbindungen sind threadgebunden: Speicher wird im Aufrufer-Thread genutzt.
+            # SQLite connections are bound to a thread: the store is used in the caller's thread.
             self.store = RdmStore(self.config.db)
         try:
             self._run(self._start_async(), timeout=15)
@@ -107,7 +107,7 @@ class RdmModule:
         if k.transport == "ARTNET":
             from .artnet_rdm import ArtnetRdmController
             if not k.artnet_target_ip:
-                raise ValueError("Art-Net-RDM braucht eine Ziel-IP (Node oder Broadcast)")
+                raise ValueError("Art-Net RDM needs a target IP (node or broadcast)")
             self.controller = ArtnetRdmController(k.artnet_target_ip, uid=k.controller_uid, bind=k.artnet_bind,
                                                   target_port=k.artnet_target_port)
             await self.controller.connect()
@@ -151,8 +151,8 @@ class RdmModule:
             return
         try:
             self._run(self._stop_async(), timeout=10)
-        except Exception as error:  # beim Herunterfahren nur protokollieren
-            log.warning("Stoppen unvollständig: %s", error)
+        except Exception as error:  # only log during shutdown
+            log.warning("Stop incomplete: %s", error)
         self._loop.call_soon_threadsafe(self._loop.stop)
         if self._thread:
             self._thread.join(timeout=5)
@@ -172,7 +172,7 @@ class RdmModule:
     def broker_status(self) -> dict | None:
         return self.broker.status() if self.broker else None
 
-    # ----------------------------------------------------------------- Geräte
+    # ----------------------------------------------------------------- devices
     def find_devices(self) -> list[DeviceAddress]:
         k = self.config
 
@@ -188,12 +188,12 @@ class RdmModule:
         profile = self._run(f())
         if self.config.transport == "ARTNET" and profile.universe is None:
             pa = self.controller.port_address(address.rdm_uid)
-            profile.universe = None if pa is None else pa + 1   # GelMatch-Zählung: Art-Net-Port-Adresse 0 = Universum 1
+            profile.universe = None if pa is None else pa + 1   # GelMatch numbering: Art-Net port address 0 = universe 1
         if save and self.store:
             self._device_ids[address.rdm_uid] = self.store.save_profile(profile)
         return profile
 
-    # ----------------------------------------------------------------- Einstellungen
+    # ----------------------------------------------------------------- settings
     def _mapping(self, profile: DeviceProfile, gdtf_mode: str) -> A.PersonalityMapping | None:
         di = profile.device_info
         if not (self.store and di):
@@ -203,14 +203,14 @@ class RdmModule:
 
     def confirm_mapping(self, profile: DeviceProfile, gdtf_mode: str, personality_num: int,
                               confirmed_by: str = "") -> A.PersonalityMapping:
-        """Bestätigt ausdrücklich, welche Personality dem GDTF-Modus entspricht."""
+        """Explicitly confirm which personality corresponds to the GDTF mode."""
         di = profile.device_info
         if di is None:
-            raise ValueError("Profil ohne DEVICE_INFO – Zuordnung nicht möglich")
+            raise ValueError("Profile without DEVICE_INFO - mapping not possible")
         if not any(p.number == personality_num for p in profile.personalities):
-            raise ValueError(f"Personality {personality_num} gibt es an diesem Gerät nicht")
+            raise ValueError(f"Personality {personality_num} does not exist on this device")
         if self.store is None:
-            raise RuntimeError("Für Zuordnungen wird eine Datenbank benötigt (RdmKonfig.db)")
+            raise RuntimeError("Mappings require a database (RdmConfig.db)")
         z = A.PersonalityMapping(profile.address.rdm_uid.manufacturer, di.model_id, di.software_version_id,
                                    personality_num, gdtf_mode, now_utc(), confirmed_by)
         self.store.confirm_mapping(z)
@@ -225,7 +225,7 @@ class RdmModule:
         return e
 
     def set_write_enabled(self, active: bool) -> None:
-        """Freigabe für RDM SET in dieser Sitzung (nach Checkliste vor Ort)."""
+        """Write permission for RDM SET in this session (after the on-site checklist)."""
         async def f():
             (await self._connected()).write_enabled = active
         self._run(f())
@@ -233,7 +233,7 @@ class RdmModule:
     def apply_setting(self, profile: DeviceProfile, expected: A.ExpectedSetting,
                              reference: str | None = None
                              ) -> tuple[A.ApplyResult, DeviceProfile, A.CheckResult]:
-        """Setzt Modus/Adresse, liest das Gerät neu aus und prüft erneut."""
+        """Set mode/address, read the device again and re-check."""
         mapping = self._mapping(profile, expected.gdtf_mode)
 
         async def f():
@@ -245,7 +245,7 @@ class RdmModule:
         new = self.read_device(profile.address)
         return application, new, self.check_setting(new, expected, reference)
 
-    # ----------------------------------------------------------------- Sensoren
+    # ----------------------------------------------------------------- sensors
     def sensor_snapshot(self, profile: DeviceProfile, measurement_ref: str | None = None,
                              phase: str = "single") -> SensorSnapshot:
         async def f():
@@ -253,7 +253,7 @@ class RdmModule:
                 profile.address, profile.sensors, self.config.all_sensors)
         try:
             s = self._run(f(), timeout=self.config.timeout_s * (len(profile.sensors) + 2))
-        except Exception as error:  # RDM darf die Messung nicht stören
+        except Exception as error:  # RDM must not disturb the measurement
             s = SensorSnapshot(str(profile.address.rdm_uid), now_utc(), 0.0, error=[repr(error)])
         if self.store:
             self.store.save_snapshot(self._device_ids.get(profile.address.rdm_uid), s, measurement_ref,
@@ -262,7 +262,7 @@ class RdmModule:
 
     @contextlib.contextmanager
     def accompany_measurement(self, profile: DeviceProfile, measurement_ref: str):
-        """Sensor-Schnappschuss vor und nach einer Messung; RDM-Fehler werden nur gespeichert."""
+        """Sensor snapshot before and after a measurement; RDM errors are only stored."""
         before = self.sensor_snapshot(profile, measurement_ref, "before")
         result = {"before": before, "after": None}
         try:
