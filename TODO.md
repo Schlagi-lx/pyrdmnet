@@ -18,6 +18,9 @@
 - [x] 7. Automatic reconnection after a broker restart (6.2.5 back-off, Client Redirect IPv4), facade waits
 - [ ] 8. Test several gateways at once (a second device next to the MasterPort)
 - [ ] 9. Test more gateways/devices, compatibility list in the README
+- [ ] 9b. Revise the restrictive SET settings: today SET is hard-wired to `ALLOWED_SET_PIDS`
+      (controller: `DMX_PERSONALITY`, `DMX_START_ADDRESS`, `IDENTIFY_DEVICE`; LLRP: `COMPONENT_SCOPE`,
+      `SEARCH_DOMAIN`, `IDENTIFY_DEVICE`), discovery commands are always blocked, plus the per-session write lock
 
 ## Tests / maintenance
 
