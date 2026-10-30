@@ -1,0 +1,312 @@
+"""Protocol constants for ANSI E1.20 (RDM), E1.33 (RDMnet), E1.37-7 (endpoints).
+
+All values were checked on 2026-10-26 against ETC's reference implementations
+(constants only, no code taken over):
+
+* ETCLabs/RDMnet  commit c59acb37b0248aa802c55d2dff522c47179f90df (include/rdmnet/defs.h,
+  src/rdmnet/core/broker_prot.*, src/rdmnet/core/rpt_prot.*)
+* ETCLabs/RDM     commit db1bfefab9aac96a2c790bb8d5fe079ff1a59650 (include/rdm/defs.h)
+
+The LLRP constants, the broker PDU vectors and the COMPONENT_SCOPE layout were later checked
+against the text of ANSI E1.33-2019 (section 5, section 7.6, tables A-2 to A-7 and A-23).
+"""
+
+# ---------------------------------------------------------------- ACN framing
+ACN_TCP_PREAMBLE = b"ASC-E1.17\x00\x00\x00"  # 12 bytes, followed by u32 PDU block size
+ACN_PDU_FLAGS = 0xF0  # L|V|H|D set, 20-bit length (3 bytes flags+length)
+
+VECTOR_ROOT_E133_RPT = 0x00000005
+VECTOR_ROOT_E133_BROKER = 0x00000009
+VECTOR_ROOT_LLRP = 0x0000000A
+VECTOR_ROOT_E133_EPT = 0x0000000B
+
+# ---------------------------------------------------------------- LLRP (E1.33 section 5, table A-2)
+ACN_UDP_PREAMBLE = b"\x00\x10\x00\x00ASC-E1.17\x00\x00\x00"  # preamble 16, postamble 0, ACN identifier
+LLRP_IPV4_REQUEST = "239.255.250.133"  # Manager -> Targets
+LLRP_IPV4_RESPONSE = "239.255.250.134"  # Targets -> Manager
+LLRP_PORT = 5569
+LLRP_TIMEOUT_S = 2.0
+LLRP_TARGET_TIMEOUT_S = 0.5
+LLRP_MAX_BACKOFF_S = 1.5
+LLRP_KNOWN_UID_SIZE = 200
+LLRP_BROADCAST_CID = "fbad822c-bd0c-4d4c-bdc8-7eabebc85aff"
+VECTOR_LLRP_PROBE_REQUEST = 0x00000001
+VECTOR_LLRP_PROBE_REPLY = 0x00000002
+VECTOR_LLRP_RDM_CMD = 0x00000003
+VECTOR_PROBE_REQUEST_DATA = 0x01
+VECTOR_PROBE_REPLY_DATA = 0x01
+LLRP_FILTER_CLIENT_CONN_INACTIVE = 0x0001  # client not connected to a broker
+LLRP_FILTER_BROKERS_ONLY = 0x0002
+LLRP_TYPE_DEVICE = 0x00
+LLRP_TYPE_CONTROLLER = 0x01
+LLRP_TYPE_BROKER = 0x02
+LLRP_TYPE_NON_RDMNET = 0xFF
+LLRP_TYPE_TEXT = {0x00: "Device", 0x01: "Controller", 0x02: "Broker", 0xFF: "LLRP only"}
+
+# ---------------------------------------------------------------- E1.33 general
+E133_VERSION = 1
+E133_DEFAULT_SCOPE = "default"
+E133_DEFAULT_DOMAIN = "local."
+E133_SCOPE_LENGTH = 63
+E133_DOMAIN_LENGTH = 231
+E133_NO_STATIC_CONFIG = 0x00  # COMPONENT_SCOPE: Static Config Type
+E133_STATIC_CONFIG_IPV4 = 0x01
+E133_STATIC_CONFIG_IPV6 = 0x02
+E133_BROKER_DISABLED = 0x00  # BROKER_STATUS: Broker State
+E133_BROKER_ACTIVE = 0x01
+E133_BROKER_STANDBY = 0x02
+E133_HEARTBEAT_INTERVAL_S = 15.0
+E133_HEARTBEAT_TIMEOUT_S = 45.0
+E133_NULL_ENDPOINT = 0x0000
+E133_BROADCAST_ENDPOINT = 0xFFFF
+E133_RPT_ALL_CONTROLLERS = 0xFFFCFFFFFFFF
+E133_RPT_ALL_DEVICES = 0xFFFDFFFFFFFF
+E133_DNSSD_TYPE = "_rdmnet._tcp.local."
+
+# Broker PDU vectors (2 bytes)
+VECTOR_BROKER_CONNECT = 0x0001
+VECTOR_BROKER_CONNECT_REPLY = 0x0002
+VECTOR_BROKER_CLIENT_ENTRY_UPDATE = 0x0003
+VECTOR_BROKER_REDIRECT_V4 = 0x0004
+VECTOR_BROKER_REDIRECT_V6 = 0x0005
+VECTOR_BROKER_FETCH_CLIENT_LIST = 0x0006
+VECTOR_BROKER_CONNECTED_CLIENT_LIST = 0x0007
+VECTOR_BROKER_CLIENT_ADD = 0x0008
+VECTOR_BROKER_CLIENT_REMOVE = 0x0009
+VECTOR_BROKER_CLIENT_ENTRY_CHANGE = 0x000A
+VECTOR_BROKER_REQUEST_DYNAMIC_UIDS = 0x000B
+VECTOR_BROKER_ASSIGNED_DYNAMIC_UIDS = 0x000C
+VECTOR_BROKER_FETCH_DYNAMIC_UID_LIST = 0x000D
+VECTOR_BROKER_DISCONNECT = 0x000E
+VECTOR_BROKER_NULL = 0x000F
+
+BROKER_CONNECT_FLAG_INCREMENTAL = 0x01
+
+# Connect reply codes
+E133_CONNECT_OK = 0x0000
+E133_CONNECT_SCOPE_MISMATCH = 0x0001
+E133_CONNECT_CAPACITY_EXCEEDED = 0x0002
+E133_CONNECT_DUPLICATE_UID = 0x0003
+E133_CONNECT_INVALID_CLIENT_ENTRY = 0x0004
+E133_CONNECT_INVALID_UID = 0x0005
+
+CONNECT_CODE_TEXT = {
+    0: "OK",
+    1: "Scope mismatch",
+    2: "Broker capacity exceeded",
+    3: "UID already connected",
+    4: "Invalid client entry",
+    5: "Invalid UID",
+}
+
+E133_DYN_UID_OK = 0x0000
+E133_DYN_UID_INVALID = 0x0001
+E133_DYN_UID_NOT_FOUND = 0x0002
+E133_DYN_UID_DUPLICATE_RID = 0x0003
+E133_DYN_UID_CAPACITY_EXCEEDED = 0x0004
+
+E133_DISCONNECT_SHUTDOWN = 0x0000
+E133_DISCONNECT_SOFTWARE_FAULT = 0x0003
+
+E133_CLIENT_PROTOCOL_RPT = 0x00000005
+E133_CLIENT_PROTOCOL_EPT = 0x0000000B
+RPT_CLIENT_TYPE_DEVICE = 0x00
+RPT_CLIENT_TYPE_CONTROLLER = 0x01
+
+# RPT vectors (4 bytes)
+VECTOR_RPT_REQUEST = 0x00000001
+VECTOR_RPT_STATUS = 0x00000002
+VECTOR_RPT_NOTIFICATION = 0x00000003
+VECTOR_REQUEST_RDM_CMD = 0x00000001  # 4 bytes in the request PDU
+VECTOR_NOTIFICATION_RDM_CMD = 0x00000001  # 4 bytes in the notification PDU
+VECTOR_RDM_CMD_RDM_DATA = 0xCC  # = RDM start code
+
+# RPT status vectors (2 bytes)
+RPT_STATUS_UNKNOWN_RPT_UID = 0x0001
+RPT_STATUS_RDM_TIMEOUT = 0x0002
+RPT_STATUS_RDM_INVALID_RESPONSE = 0x0003
+RPT_STATUS_UNKNOWN_RDM_UID = 0x0004
+RPT_STATUS_UNKNOWN_ENDPOINT = 0x0005
+RPT_STATUS_BROADCAST_COMPLETE = 0x0006
+RPT_STATUS_UNKNOWN_VECTOR = 0x0007
+RPT_STATUS_INVALID_MESSAGE = 0x0008
+RPT_STATUS_INVALID_COMMAND_CLASS = 0x0009
+
+RPT_STATUS_TEXT = {
+    1: "Unknown RPT UID",
+    2: "RDM timeout at gateway",
+    3: "Invalid RDM response",
+    4: "Unknown RDM UID",
+    5: "Unknown endpoint",
+    6: "Broadcast complete",
+    7: "Unknown vector",
+    8: "Invalid message",
+    9: "Invalid command class",
+}
+
+# E1.33-PIDs
+PID_COMPONENT_SCOPE = 0x0800
+PID_SEARCH_DOMAIN = 0x0801
+PID_TCP_COMMS_STATUS = 0x0802
+PID_BROKER_STATUS = 0x0803
+
+# ---------------------------------------------------------------- E1.20 RDM
+RDM_STARTCODE = 0xCC
+RDM_SUB_STARTCODE = 0x01
+RDM_HEADER_LENGTH = 24  # start code up to and including PDL
+RDM_MAX_PDL = 231
+RDM_ROOT_DEVICE = 0x0000
+RDM_ALL_SUBDEVICES = 0xFFFF
+
+CC_DISCOVERY = 0x10
+CC_DISCOVERY_RESPONSE = 0x11
+CC_GET = 0x20
+CC_GET_RESPONSE = 0x21
+CC_SET = 0x30
+CC_SET_RESPONSE = 0x31
+
+RESPONSE_ACK = 0x00
+RESPONSE_ACK_TIMER = 0x01
+RESPONSE_NACK = 0x02
+RESPONSE_ACK_OVERFLOW = 0x03
+
+NACK_TEXT = {
+    0x0000: "UNKNOWN_PID – parameter not supported",
+    0x0001: "FORMAT_ERROR",
+    0x0002: "HARDWARE_FAULT",
+    0x0003: "PROXY_REJECT",
+    0x0004: "WRITE_PROTECT",
+    0x0005: "UNSUPPORTED_COMMAND_CLASS",
+    0x0006: "DATA_OUT_OF_RANGE",
+    0x0007: "BUFFER_FULL",
+    0x0008: "PACKET_SIZE_UNSUPPORTED",
+    0x0009: "SUB_DEVICE_OUT_OF_RANGE",
+    0x000A: "PROXY_BUFFER_FULL",
+    0x000B: "ACTION_NOT_SUPPORTED",
+}
+NR_UNKNOWN_PID = 0x0000
+NR_FORMAT_ERROR = 0x0001
+NR_HARDWARE_FAULT = 0x0002
+NR_WRITE_PROTECT = 0x0004
+NR_UNSUPPORTED_COMMAND_CLASS = 0x0005
+NR_DATA_OUT_OF_RANGE = 0x0006
+NR_SUB_DEVICE_OUT_OF_RANGE = 0x0009
+NR_ACTION_NOT_SUPPORTED = 0x000B  # E1.37-1
+
+# PIDs (selection, used read-only)
+PID_QUEUED_MESSAGE = 0x0020
+PID_STATUS_MESSAGES = 0x0030
+PID_SUPPORTED_PARAMETERS = 0x0050
+PID_PARAMETER_DESCRIPTION = 0x0051
+PID_DEVICE_INFO = 0x0060
+PID_PRODUCT_DETAIL_ID_LIST = 0x0070
+PID_DEVICE_MODEL_DESCRIPTION = 0x0080
+PID_MANUFACTURER_LABEL = 0x0081
+PID_DEVICE_LABEL = 0x0082
+PID_SOFTWARE_VERSION_LABEL = 0x00C0
+PID_DMX_PERSONALITY = 0x00E0
+PID_DMX_PERSONALITY_DESCRIPTION = 0x00E1
+PID_DMX_START_ADDRESS = 0x00F0
+PID_SENSOR_DEFINITION = 0x0200
+PID_SENSOR_VALUE = 0x0201
+PID_DEVICE_HOURS = 0x0400
+PID_LAMP_HOURS = 0x0401
+PID_LAMP_STRIKES = 0x0402
+PID_DEVICE_POWER_CYCLES = 0x0405
+PID_IDENTIFY_DEVICE = 0x1000
+
+# E1.37-7 Endpoints
+PID_ENDPOINT_LIST = 0x0900
+PID_ENDPOINT_TO_UNIVERSE = 0x0903
+PID_ENDPOINT_MODE = 0x0904
+PID_ENDPOINT_LABEL = 0x0905
+PID_RDM_TRAFFIC_ENABLE = 0x0906
+PID_DISCOVERY_STATE = 0x0907
+PID_ENDPOINT_RESPONDERS = 0x090B
+ENDPOINT_TYPE_VIRTUAL = 0x00
+ENDPOINT_TYPE_PHYSICAL = 0x01
+ENDPOINT_MODE_TEXT = {0x00: "Disabled", 0x01: "Input", 0x02: "Output"}
+DISCOVERY_STATE_TEXT = {0x00: "incomplete", 0x01: "incremental", 0x02: "full", 0x04: "not active"}
+
+PID_NAMES = {
+    PID_SUPPORTED_PARAMETERS: "SUPPORTED_PARAMETERS",
+    PID_DEVICE_INFO: "DEVICE_INFO",
+    PID_PRODUCT_DETAIL_ID_LIST: "PRODUCT_DETAIL_ID_LIST",
+    PID_DEVICE_MODEL_DESCRIPTION: "DEVICE_MODEL_DESCRIPTION",
+    PID_MANUFACTURER_LABEL: "MANUFACTURER_LABEL",
+    PID_DEVICE_LABEL: "DEVICE_LABEL",
+    PID_SOFTWARE_VERSION_LABEL: "SOFTWARE_VERSION_LABEL",
+    PID_DMX_PERSONALITY: "DMX_PERSONALITY",
+    PID_DMX_PERSONALITY_DESCRIPTION: "DMX_PERSONALITY_DESCRIPTION",
+    PID_DMX_START_ADDRESS: "DMX_START_ADDRESS",
+    PID_SENSOR_DEFINITION: "SENSOR_DEFINITION",
+    PID_SENSOR_VALUE: "SENSOR_VALUE",
+    PID_DEVICE_HOURS: "DEVICE_HOURS",
+    PID_LAMP_HOURS: "LAMP_HOURS",
+    PID_LAMP_STRIKES: "LAMP_STRIKES",
+    PID_DEVICE_POWER_CYCLES: "DEVICE_POWER_CYCLES",
+    PID_ENDPOINT_LIST: "ENDPOINT_LIST",
+    PID_ENDPOINT_TO_UNIVERSE: "ENDPOINT_TO_UNIVERSE",
+    PID_ENDPOINT_RESPONDERS: "ENDPOINT_RESPONDERS",
+    PID_ENDPOINT_MODE: "ENDPOINT_MODE",
+    PID_ENDPOINT_LABEL: "ENDPOINT_LABEL",
+    PID_RDM_TRAFFIC_ENABLE: "RDM_TRAFFIC_ENABLE",
+    PID_DISCOVERY_STATE: "DISCOVERY_STATE",
+    PID_COMPONENT_SCOPE: "COMPONENT_SCOPE",
+}
+
+# Sensor types (E1.20 table A-12)
+SENSOR_TYPE_TEXT = {
+    0x00: "Temperature", 0x01: "Voltage", 0x02: "Current", 0x03: "Frequency",
+    0x04: "Resistance", 0x05: "Power", 0x06: "Mass", 0x07: "Length",
+    0x08: "Area", 0x09: "Volume", 0x0A: "Density", 0x0B: "Velocity",
+    0x0C: "Acceleration", 0x0D: "Force", 0x0E: "Energy", 0x0F: "Pressure",
+    0x10: "Time", 0x11: "Angle", 0x12: "Position X", 0x13: "Position Y",
+    0x14: "Position Z", 0x15: "Angular velocity", 0x16: "Luminous intensity",
+    0x17: "Luminous flux", 0x18: "Illuminance", 0x19: "Chrominance red",
+    0x1A: "Chrominance green", 0x1B: "Chrominance blue", 0x1C: "Contacts",
+    0x1D: "Memory", 0x1E: "Items", 0x1F: "Humidity",
+    0x20: "Counter 16 bit", 0x7F: "Other",
+}
+
+# Sensor types relevant for the measurement: they affect light output/spectrum
+# or document the operating state of the fixture during the measurement.
+MEASUREMENT_RELEVANT_SENSOR_TYPES = frozenset({
+    0x00,  # temperature (LED junction, housing, driver)
+    0x01,  # voltage (supply)
+    0x02,  # current
+    0x03,  # frequency (mains, PWM, fan if reported as such)
+    0x05,  # power
+    0x16, 0x17, 0x18,  # internal light/luminous flux sensors
+    0x19, 0x1A, 0x1B,  # internal colour sensors
+    0x1F,  # humidity
+})
+
+# Units (E1.20 table A-13)
+UNIT_TEXT = {
+    0x00: "", 0x01: "°C", 0x02: "V DC", 0x03: "V AC (peak)", 0x04: "V AC (RMS)",
+    0x05: "A DC", 0x06: "A AC (peak)", 0x07: "A AC (RMS)", 0x08: "Hz",
+    0x09: "Ω", 0x0A: "W", 0x0B: "kg", 0x0C: "m", 0x0D: "m²", 0x0E: "m³",
+    0x0F: "kg/m³", 0x10: "m/s", 0x11: "m/s²", 0x12: "N", 0x13: "J", 0x14: "Pa",
+    0x15: "s", 0x16: "°", 0x17: "sr", 0x18: "cd", 0x19: "lm", 0x1A: "lx",
+    0x1B: "IRE", 0x1C: "bytes",
+}
+
+# Prefixes (E1.20 table A-14) -> power-of-ten exponent
+PREFIX_EXPONENT = {
+    0x00: 0, 0x01: -1, 0x02: -2, 0x03: -3, 0x04: -6, 0x05: -9, 0x06: -12,
+    0x07: -15, 0x08: -18, 0x09: -21, 0x0A: -24,
+    0x11: 1, 0x12: 2, 0x13: 3, 0x14: 6, 0x15: 9, 0x16: 12, 0x17: 15,
+    0x18: 18, 0x19: 21, 0x1A: 24,
+}
+
+# Product categories (selection, high-byte groups of E1.20 table A-5)
+PRODUCT_CATEGORY_GROUP = {
+    0x00: "Not declared", 0x01: "Fixture", 0x02: "Fixture accessory",
+    0x03: "Projector", 0x04: "Atmospheric", 0x05: "Dimmer", 0x06: "Power",
+    0x07: "Scenic", 0x08: "Data distribution", 0x09: "Console/control",
+    0x0A: "Audio/video", 0x71: "Test", 0x7F: "Other",
+}
+
+# Manufacturer ID for prototypes (ESTA reserves 0x7FF0–0x7FFF)
+ESTA_PROTOTYPE_MANUFACTURER = 0x7FF0

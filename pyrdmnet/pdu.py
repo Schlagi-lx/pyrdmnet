@@ -1,9 +1,9 @@
-"""ACN/E1.33-Rahmen: TCP-Präambel, Root-Layer, Broker-, RPT-, Request-,
-Notification-, Status- und RDM-Command-PDUs.
+"""ACN/E1.33 framing: TCP preamble, root layer, broker, RPT, request,
+notification, status and RDM command PDUs.
 
-Alle PDUs werden mit gesetzten Flags L|V|H|D (0xF0) und 20-Bit-Länge
-geschrieben, wie in E1.33 vorgesehen. Beim Lesen wird geprüft, dass V/H/D
-gesetzt sind (keine Vererbung); andernfalls wird die Nachricht abgelehnt.
+All PDUs are written with flags L|V|H|D (0xF0) set and a 20-bit length,
+as specified in E1.33. On reading, V/H/D must be set (no inheritance);
+otherwise the message is rejected.
 """
 
 from __future__ import annotations
@@ -13,194 +13,194 @@ import struct
 import uuid
 from dataclasses import dataclass, field
 
-from . import konstanten as K
+from . import constants as C
 from .rdm import Uid
 
-MAX_BLOCK = 64 * 1024  # Schutz gegen übergroße Blöcke von fehlerhaften Clients
+MAX_BLOCK = 64 * 1024  # protection against oversized blocks from faulty clients
 
 
-class ProtokollFehler(ValueError):
-    """Eine RDMnet-Nachricht ist formal ungültig."""
+class ProtocolError(ValueError):
+    """An RDMnet message is malformed."""
 
 
-# ------------------------------------------------------------------- Grundbausteine
-def flags_laenge(n: int) -> bytes:
+# ------------------------------------------------------------------- Building blocks
+def flags_length(n: int) -> bytes:
     if not 0 < n < (1 << 20):
-        raise ProtokollFehler(f"PDU-Länge {n} nicht darstellbar")
-    return bytes((K.ACN_PDU_FLAGS | ((n >> 16) & 0x0F), (n >> 8) & 0xFF, n & 0xFF))
+        raise ProtocolError(f"PDU length {n} cannot be represented")
+    return bytes((C.ACN_PDU_FLAGS | ((n >> 16) & 0x0F), (n >> 8) & 0xFF, n & 0xFF))
 
 
-def lese_flags_laenge(buf: bytes, pos: int) -> tuple[int, int]:
-    """Gibt (PDU-Länge, Kopfgröße 2 oder 3) zurück."""
+def read_flags_length(buf: bytes, pos: int) -> tuple[int, int]:
+    """Returns (PDU length, header size 2 or 3)."""
     if pos + 2 > len(buf):
-        raise ProtokollFehler("PDU-Kopf abgeschnitten")
+        raise ProtocolError("PDU-Kopf abgeschnitten")
     flags = buf[pos]
     if flags & 0x70 != 0x70:
-        raise ProtokollFehler(f"PDU-Vererbung (Flags {flags:#04x}) wird nicht unterstützt")
+        raise ProtocolError(f"PDU inheritance (flags {flags:#04x}) is not supported")
     if flags & 0x80:
         if pos + 3 > len(buf):
-            raise ProtokollFehler("PDU-Kopf abgeschnitten")
+            raise ProtocolError("PDU-Kopf abgeschnitten")
         n = ((flags & 0x0F) << 16) | (buf[pos + 1] << 8) | buf[pos + 2]
-        kopf = 3
+        header = 3
     else:
         n = ((flags & 0x0F) << 8) | buf[pos + 1]
-        kopf = 2
-    if n < kopf or pos + n > len(buf):
-        raise ProtokollFehler(f"PDU-Länge {n} passt nicht zum Puffer")
-    return n, kopf
+        header = 2
+    if n < header or pos + n > len(buf):
+        raise ProtocolError(f"PDU length {n} does not fit the buffer")
+    return n, header
 
 
-def pdus_aufteilen(buf: bytes) -> list[tuple[bytes, int]]:
-    """Teilt einen Puffer in aufeinanderfolgende PDUs; liefert (PDU, Kopfgröße)."""
-    pos, teile = 0, []
+def split_pdus(buf: bytes) -> list[tuple[bytes, int]]:
+    """Splits a buffer into consecutive PDUs; returns (PDU, header size)."""
+    pos, parts = 0, []
     while pos < len(buf):
-        n, kopf = lese_flags_laenge(buf, pos)
-        teile.append((buf[pos:pos + n], kopf))
+        n, header = read_flags_length(buf, pos)
+        parts.append((buf[pos:pos + n], header))
         pos += n
-    return teile
+    return parts
 
 
 # ------------------------------------------------------------------- Root Layer
 @dataclass
 class RootPdu:
-    vektor: int
+    vector: int
     cid: uuid.UUID
-    daten: bytes
+    data: bytes
 
 
-def baue_paket(root_vektor: int, cid: uuid.UUID, inhalt: bytes) -> bytes:
-    root = flags_laenge(3 + 4 + 16 + len(inhalt)) + struct.pack(">I", root_vektor) + cid.bytes + inhalt
-    return K.ACN_TCP_PREAMBEL + struct.pack(">I", len(root)) + root
+def build_packet(root_vector: int, cid: uuid.UUID, content: bytes) -> bytes:
+    root = flags_length(3 + 4 + 16 + len(content)) + struct.pack(">I", root_vector) + cid.bytes + content
+    return C.ACN_TCP_PREAMBLE + struct.pack(">I", len(root)) + root
 
 
-def lese_root_pdus(block: bytes) -> list[RootPdu]:
-    ergebnis = []
-    for pdu, kopf in pdus_aufteilen(block):
-        if len(pdu) < kopf + 20:
-            raise ProtokollFehler("Root-PDU zu kurz")
-        (vektor,) = struct.unpack(">I", pdu[kopf:kopf + 4])
-        cid = uuid.UUID(bytes=bytes(pdu[kopf + 4:kopf + 20]))
-        ergebnis.append(RootPdu(vektor, cid, bytes(pdu[kopf + 20:])))
-    return ergebnis
+def read_root_pdus(block: bytes) -> list[RootPdu]:
+    result = []
+    for pdu, header in split_pdus(block):
+        if len(pdu) < header + 20:
+            raise ProtocolError("Root PDU too short")
+        (vector,) = struct.unpack(">I", pdu[header:header + 4])
+        cid = uuid.UUID(bytes=bytes(pdu[header + 4:header + 20]))
+        result.append(RootPdu(vector, cid, bytes(pdu[header + 20:])))
+    return result
 
 
-async def lese_tcp_block(reader: asyncio.StreamReader, max_block: int = MAX_BLOCK) -> bytes:
-    """Liest Präambel + Blockgröße + Block. Wirft ProtokollFehler bei falscher Präambel."""
-    kopf = await reader.readexactly(16)
-    if kopf[:12] != K.ACN_TCP_PREAMBEL:
-        raise ProtokollFehler("Falsche ACN-TCP-Präambel")
-    (groesse,) = struct.unpack(">I", kopf[12:])
-    if groesse == 0 or groesse > max_block:
-        raise ProtokollFehler(f"PDU-Blockgröße {groesse} unzulässig")
-    return await reader.readexactly(groesse)
+async def read_tcp_block(reader: asyncio.StreamReader, max_block: int = MAX_BLOCK) -> bytes:
+    """Reads preamble + block size + block. Raises ProtocolError on a wrong preamble."""
+    header = await reader.readexactly(16)
+    if header[:12] != C.ACN_TCP_PREAMBLE:
+        raise ProtocolError("Wrong ACN TCP preamble")
+    (size,) = struct.unpack(">I", header[12:])
+    if size == 0 or size > max_block:
+        raise ProtocolError(f"PDU block size {size} not allowed")
+    return await reader.readexactly(size)
 
 
-# ------------------------------------------------------------------- Broker-PDUs
+# ------------------------------------------------------------------- Broker PDUs
 @dataclass
 class BrokerPdu:
-    vektor: int
-    daten: bytes
+    vector: int
+    data: bytes
 
 
-def baue_broker(vektor: int, daten: bytes = b"") -> bytes:
-    return flags_laenge(5 + len(daten)) + struct.pack(">H", vektor) + daten
+def build_broker(vector: int, data: bytes = b"") -> bytes:
+    return flags_length(5 + len(data)) + struct.pack(">H", vector) + data
 
 
-def lese_broker(daten: bytes) -> BrokerPdu:
-    teile = pdus_aufteilen(daten)
-    if len(teile) != 1:
-        raise ProtokollFehler("Genau eine Broker-PDU erwartet")
-    pdu, kopf = teile[0]
-    if len(pdu) < kopf + 2:
-        raise ProtokollFehler("Broker-PDU zu kurz")
-    (vektor,) = struct.unpack(">H", pdu[kopf:kopf + 2])
-    return BrokerPdu(vektor, bytes(pdu[kopf + 2:]))
+def read_broker(data: bytes) -> BrokerPdu:
+    parts = split_pdus(data)
+    if len(parts) != 1:
+        raise ProtocolError("Expected exactly one broker PDU")
+    pdu, header = parts[0]
+    if len(pdu) < header + 2:
+        raise ProtocolError("Broker PDU too short")
+    (vector,) = struct.unpack(">H", pdu[header:header + 2])
+    return BrokerPdu(vector, bytes(pdu[header + 2:]))
 
 
 @dataclass
-class ClientEintrag:
-    """RPT-Client-Eintrag (E1.33 6.3.2)."""
+class ClientEntry:
+    """RPT client entry (E1.33 6.3.2)."""
 
     cid: uuid.UUID
     uid: Uid
-    typ: int  # RPT_CLIENT_TYP_GERAET / _CONTROLLER
+    type: int  # RPT_CLIENT_TYPE_DEVICE / _CONTROLLER
     binding_cid: uuid.UUID = field(default_factory=lambda: uuid.UUID(int=0))
-    protokoll: int = K.E133_CLIENT_PROTOKOLL_RPT
+    protocol: int = C.E133_CLIENT_PROTOCOL_RPT
 
-    def kodieren(self) -> bytes:
-        nutz = self.uid.als_bytes() + bytes((self.typ,)) + self.binding_cid.bytes
-        return flags_laenge(3 + 4 + 16 + len(nutz)) + struct.pack(">I", self.protokoll) + self.cid.bytes + nutz
+    def encode(self) -> bytes:
+        payload = self.uid.to_bytes() + bytes((self.type,)) + self.binding_cid.bytes
+        return flags_length(3 + 4 + 16 + len(payload)) + struct.pack(">I", self.protocol) + self.cid.bytes + payload
 
     @property
-    def typ_text(self) -> str:
-        return {0: "Gerät", 1: "Controller"}.get(self.typ, f"Typ {self.typ}")
+    def type_text(self) -> str:
+        return {0: "Device", 1: "Controller"}.get(self.type, f"Type {self.type}")
 
 
-def lese_client_eintraege(daten: bytes) -> list[ClientEintrag]:
-    eintraege = []
-    for pdu, kopf in pdus_aufteilen(daten):
-        if len(pdu) < kopf + 20:
-            raise ProtokollFehler("Client-Eintrag zu kurz")
-        (prot,) = struct.unpack(">I", pdu[kopf:kopf + 4])
-        cid = uuid.UUID(bytes=bytes(pdu[kopf + 4:kopf + 20]))
-        nutz = pdu[kopf + 20:]
-        if prot != K.E133_CLIENT_PROTOKOLL_RPT:
-            # EPT-Clients werden erkannt, aber von diesem Modul nicht unterstützt.
-            eintraege.append(ClientEintrag(cid, Uid(0, 0), 0xFF, protokoll=prot))
+def read_client_entries(data: bytes) -> list[ClientEntry]:
+    entries = []
+    for pdu, header in split_pdus(data):
+        if len(pdu) < header + 20:
+            raise ProtocolError("Client entry too short")
+        (prot,) = struct.unpack(">I", pdu[header:header + 4])
+        cid = uuid.UUID(bytes=bytes(pdu[header + 4:header + 20]))
+        payload = pdu[header + 20:]
+        if prot != C.E133_CLIENT_PROTOCOL_RPT:
+            # EPT clients are recognised but not supported by this module.
+            entries.append(ClientEntry(cid, Uid(0, 0), 0xFF, protocol=prot))
             continue
-        if len(nutz) != 23:
-            raise ProtokollFehler(f"RPT-Client-Eintrag mit {len(nutz)} statt 23 Byte")
-        eintraege.append(ClientEintrag(cid, Uid.aus_bytes(bytes(nutz[:6])), nutz[6],
-                                       uuid.UUID(bytes=bytes(nutz[7:23]))))
-    return eintraege
+        if len(payload) != 23:
+            raise ProtocolError(f"RPT client entry with {len(payload)} bytes instead of 23")
+        entries.append(ClientEntry(cid, Uid.from_bytes(bytes(payload[:6])), payload[6],
+                                       uuid.UUID(bytes=bytes(payload[7:23]))))
+    return entries
 
 
-def baue_client_entry_update(flags: int, eintrag: ClientEintrag) -> bytes:
-    """Daten einer Client-Entry-Update-Nachricht (E1.33 6.3.1.4): Flags + Client-Eintrag."""
-    return bytes((flags,)) + eintrag.kodieren()
+def build_client_entry_update(flags: int, entry: ClientEntry) -> bytes:
+    """Data of a client entry update message (E1.33 6.3.1.4): flags + client entry."""
+    return bytes((flags,)) + entry.encode()
 
 
-def lese_client_entry_update(daten: bytes) -> tuple[int, ClientEintrag]:
-    if len(daten) < 1:
-        raise ProtokollFehler("Client Entry Update ohne Daten")
-    eintraege = lese_client_eintraege(daten[1:])
-    if len(eintraege) != 1:
-        raise ProtokollFehler("Client Entry Update muss genau einen Client-Eintrag enthalten")
-    return daten[0], eintraege[0]
+def read_client_entry_update(data: bytes) -> tuple[int, ClientEntry]:
+    if len(data) < 1:
+        raise ProtocolError("Client entry update without data")
+    entries = read_client_entries(data[1:])
+    if len(entries) != 1:
+        raise ProtocolError("Client entry update must contain exactly one client entry")
+    return data[0], entries[0]
 
 
 @dataclass
-class ConnectDaten:
+class ConnectData:
     scope: str
     version: int
     domain: str
     flags: int
-    client: ClientEintrag
+    client: ClientEntry
 
-    def kodieren(self) -> bytes:
-        scope = self.scope.encode("utf-8")[:K.E133_SCOPE_LAENGE - 1]
-        domain = self.domain.encode("utf-8")[:K.E133_DOMAIN_LAENGE - 1]
-        return (scope.ljust(K.E133_SCOPE_LAENGE, b"\x00") + struct.pack(">H", self.version)
-                + domain.ljust(K.E133_DOMAIN_LAENGE, b"\x00") + bytes((self.flags,)) + self.client.kodieren())
+    def encode(self) -> bytes:
+        scope = self.scope.encode("utf-8")[:C.E133_SCOPE_LENGTH - 1]
+        domain = self.domain.encode("utf-8")[:C.E133_DOMAIN_LENGTH - 1]
+        return (scope.ljust(C.E133_SCOPE_LENGTH, b"\x00") + struct.pack(">H", self.version)
+                + domain.ljust(C.E133_DOMAIN_LENGTH, b"\x00") + bytes((self.flags,)) + self.client.encode())
 
 
-def _nullstring(b: bytes) -> str:
+def _null_string(b: bytes) -> str:
     return b.split(b"\x00", 1)[0].decode("utf-8", errors="replace")
 
 
-def lese_connect(daten: bytes) -> ConnectDaten:
-    fest = K.E133_SCOPE_LAENGE + 2 + K.E133_DOMAIN_LAENGE + 1
-    if len(daten) < fest + 23:
-        raise ProtokollFehler("Connect-Nachricht zu kurz")
-    scope = _nullstring(daten[:K.E133_SCOPE_LAENGE])
-    (version,) = struct.unpack(">H", daten[K.E133_SCOPE_LAENGE:K.E133_SCOPE_LAENGE + 2])
-    dpos = K.E133_SCOPE_LAENGE + 2
-    domain = _nullstring(daten[dpos:dpos + K.E133_DOMAIN_LAENGE])
-    flags = daten[fest - 1]
-    eintraege = lese_client_eintraege(daten[fest:])
-    if len(eintraege) != 1:
-        raise ProtokollFehler("Connect muss genau einen Client-Eintrag enthalten")
-    return ConnectDaten(scope, version, domain, flags, eintraege[0])
+def read_connect(data: bytes) -> ConnectData:
+    fixed = C.E133_SCOPE_LENGTH + 2 + C.E133_DOMAIN_LENGTH + 1
+    if len(data) < fixed + 23:
+        raise ProtocolError("Connect message too short")
+    scope = _null_string(data[:C.E133_SCOPE_LENGTH])
+    (version,) = struct.unpack(">H", data[C.E133_SCOPE_LENGTH:C.E133_SCOPE_LENGTH + 2])
+    dpos = C.E133_SCOPE_LENGTH + 2
+    domain = _null_string(data[dpos:dpos + C.E133_DOMAIN_LENGTH])
+    flags = data[fixed - 1]
+    entries = read_client_entries(data[fixed:])
+    if len(entries) != 1:
+        raise ProtocolError("Connect must contain exactly one client entry")
+    return ConnectData(scope, version, domain, flags, entries[0])
 
 
 @dataclass
@@ -210,136 +210,136 @@ class ConnectReply:
     broker_uid: Uid
     client_uid: Uid
 
-    def kodieren(self) -> bytes:
-        return struct.pack(">HH", self.code, self.version) + self.broker_uid.als_bytes() + self.client_uid.als_bytes()
+    def encode(self) -> bytes:
+        return struct.pack(">HH", self.code, self.version) + self.broker_uid.to_bytes() + self.client_uid.to_bytes()
 
 
-def lese_connect_reply(daten: bytes) -> ConnectReply:
-    if len(daten) != 16:
-        raise ProtokollFehler(f"Connect-Reply mit {len(daten)} statt 16 Byte")
-    code, version = struct.unpack(">HH", daten[:4])
-    return ConnectReply(code, version, Uid.aus_bytes(daten[4:10]), Uid.aus_bytes(daten[10:16]))
+def read_connect_reply(data: bytes) -> ConnectReply:
+    if len(data) != 16:
+        raise ProtocolError(f"Connect reply with {len(data)} bytes instead of 16")
+    code, version = struct.unpack(">HH", data[:4])
+    return ConnectReply(code, version, Uid.from_bytes(data[4:10]), Uid.from_bytes(data[10:16]))
 
 
 @dataclass
-class DynUidAnfrage:
-    uid: Uid  # Herstellerkennung mit gesetztem MSB, Geräte-ID 0
+class DynUidRequest:
+    uid: Uid  # manufacturer ID with MSB set, device ID 0
     rid: uuid.UUID
 
 
-def lese_dyn_uid_anfragen(daten: bytes) -> list[DynUidAnfrage]:
-    if len(daten) % 22:
-        raise ProtokollFehler("Dynamic-UID-Anfrage: Länge kein Vielfaches von 22")
-    return [DynUidAnfrage(Uid.aus_bytes(daten[i:i + 6]), uuid.UUID(bytes=bytes(daten[i + 6:i + 22])))
-            for i in range(0, len(daten), 22)]
+def read_dyn_uid_requests(data: bytes) -> list[DynUidRequest]:
+    if len(data) % 22:
+        raise ProtocolError("Dynamic UID request: length not a multiple of 22")
+    return [DynUidRequest(Uid.from_bytes(data[i:i + 6]), uuid.UUID(bytes=bytes(data[i + 6:i + 22])))
+            for i in range(0, len(data), 22)]
 
 
-def baue_dyn_uid_zuordnungen(zuordnungen: list[tuple[Uid, uuid.UUID, int]]) -> bytes:
-    return b"".join(u.als_bytes() + r.bytes + struct.pack(">H", s) for u, r, s in zuordnungen)
+def build_dyn_uid_assignments(mappings: list[tuple[Uid, uuid.UUID, int]]) -> bytes:
+    return b"".join(u.to_bytes() + r.bytes + struct.pack(">H", s) for u, r, s in mappings)
 
 
-def lese_dyn_uid_zuordnungen(daten: bytes) -> list[tuple[Uid, uuid.UUID, int]]:
-    if len(daten) % 24:
-        raise ProtokollFehler("Dynamic-UID-Zuordnung: Länge kein Vielfaches von 24")
-    return [(Uid.aus_bytes(daten[i:i + 6]), uuid.UUID(bytes=bytes(daten[i + 6:i + 22])),
-             struct.unpack(">H", daten[i + 22:i + 24])[0]) for i in range(0, len(daten), 24)]
+def read_dyn_uid_assignments(data: bytes) -> list[tuple[Uid, uuid.UUID, int]]:
+    if len(data) % 24:
+        raise ProtocolError("Dynamic UID mapping: length not a multiple of 24")
+    return [(Uid.from_bytes(data[i:i + 6]), uuid.UUID(bytes=bytes(data[i + 6:i + 22])),
+             struct.unpack(">H", data[i + 22:i + 24])[0]) for i in range(0, len(data), 24)]
 
 
-def lese_uid_liste(daten: bytes) -> list[Uid]:
-    if len(daten) % 6:
-        raise ProtokollFehler("UID-Liste: Länge kein Vielfaches von 6")
-    return [Uid.aus_bytes(daten[i:i + 6]) for i in range(0, len(daten), 6)]
+def read_uid_list(data: bytes) -> list[Uid]:
+    if len(data) % 6:
+        raise ProtocolError("UID list: length not a multiple of 6")
+    return [Uid.from_bytes(data[i:i + 6]) for i in range(0, len(data), 6)]
 
 
 # ------------------------------------------------------------------- RPT
 @dataclass
-class RptKopf:
-    vektor: int
-    quelle: Uid
-    quelle_endpoint: int
-    ziel: Uid
-    ziel_endpoint: int
-    sequenz: int
+class RptHeader:
+    vector: int
+    source: Uid
+    source_endpoint: int
+    dest: Uid
+    dest_endpoint: int
+    sequence: int
 
 
 @dataclass
 class RptPdu:
-    kopf: RptKopf
-    daten: bytes  # Request-, Status- oder Notification-PDU
+    header: RptHeader
+    data: bytes  # request, status or notification PDU
 
 
-def baue_rpt(kopf: RptKopf, daten: bytes) -> bytes:
-    return (flags_laenge(28 + len(daten)) + struct.pack(">I", kopf.vektor) + kopf.quelle.als_bytes()
-            + struct.pack(">H", kopf.quelle_endpoint) + kopf.ziel.als_bytes()
-            + struct.pack(">HIB", kopf.ziel_endpoint, kopf.sequenz & 0xFFFFFFFF, 0) + daten)
+def build_rpt(header: RptHeader, data: bytes) -> bytes:
+    return (flags_length(28 + len(data)) + struct.pack(">I", header.vector) + header.source.to_bytes()
+            + struct.pack(">H", header.source_endpoint) + header.dest.to_bytes()
+            + struct.pack(">HIB", header.dest_endpoint, header.sequence & 0xFFFFFFFF, 0) + data)
 
 
-def lese_rpt(daten: bytes) -> RptPdu:
-    teile = pdus_aufteilen(daten)
-    if len(teile) != 1:
-        raise ProtokollFehler("Genau eine RPT-PDU erwartet")
-    pdu, kopf = teile[0]
-    if len(pdu) < kopf + 25:
-        raise ProtokollFehler("RPT-PDU zu kurz")
-    p = kopf
-    (vektor,) = struct.unpack(">I", pdu[p:p + 4])
-    quelle = Uid.aus_bytes(bytes(pdu[p + 4:p + 10]))
-    (q_ep,) = struct.unpack(">H", pdu[p + 10:p + 12])
-    ziel = Uid.aus_bytes(bytes(pdu[p + 12:p + 18]))
-    z_ep, seq, _res = struct.unpack(">HIB", pdu[p + 18:p + 25])
-    return RptPdu(RptKopf(vektor, quelle, q_ep, ziel, z_ep, seq), bytes(pdu[p + 25:]))
+def read_rpt(data: bytes) -> RptPdu:
+    parts = split_pdus(data)
+    if len(parts) != 1:
+        raise ProtocolError("Expected exactly one RPT PDU")
+    pdu, header = parts[0]
+    if len(pdu) < header + 25:
+        raise ProtocolError("RPT PDU too short")
+    p = header
+    (vector,) = struct.unpack(">I", pdu[p:p + 4])
+    source = Uid.from_bytes(bytes(pdu[p + 4:p + 10]))
+    (src_ep,) = struct.unpack(">H", pdu[p + 10:p + 12])
+    dest = Uid.from_bytes(bytes(pdu[p + 12:p + 18]))
+    dst_ep, seq, _res = struct.unpack(">HIB", pdu[p + 18:p + 25])
+    return RptPdu(RptHeader(vector, source, src_ep, dest, dst_ep, seq), bytes(pdu[p + 25:]))
 
 
-def baue_rdm_cmd_pdu(rdm_roh: bytes) -> bytes:
-    """RDM-Command-PDU: Flags+Länge, Vektor 0xCC (= Startcode), Rest der RDM-Nachricht."""
-    if not rdm_roh or rdm_roh[0] != K.VECTOR_RDM_CMD_RDM_DATA:
-        raise ProtokollFehler("RDM-Nachricht muss mit Startcode 0xCC beginnen")
-    return flags_laenge(3 + len(rdm_roh)) + rdm_roh
+def build_rdm_cmd_pdu(rdm_raw: bytes) -> bytes:
+    """RDM command PDU: flags+length, vector 0xCC (= start code), rest of the RDM message."""
+    if not rdm_raw or rdm_raw[0] != C.VECTOR_RDM_CMD_RDM_DATA:
+        raise ProtocolError("RDM message must begin with start code 0xCC")
+    return flags_length(3 + len(rdm_raw)) + rdm_raw
 
 
-def _lese_rdm_cmd_pdus(daten: bytes) -> list[bytes]:
-    nachrichten = []
-    for pdu, kopf in pdus_aufteilen(daten):
-        if len(pdu) <= kopf or pdu[kopf] != K.VECTOR_RDM_CMD_RDM_DATA:
-            raise ProtokollFehler("RDM-Command-PDU mit falschem Vektor")
-        nachrichten.append(bytes(pdu[kopf:]))  # inkl. Startcode
-    return nachrichten
+def _read_rdm_cmd_pdus(data: bytes) -> list[bytes]:
+    messages = []
+    for pdu, header in split_pdus(data):
+        if len(pdu) <= header or pdu[header] != C.VECTOR_RDM_CMD_RDM_DATA:
+            raise ProtocolError("RDM command PDU with wrong vector")
+        messages.append(bytes(pdu[header:]))  # incl. start code
+    return messages
 
 
-def baue_request(rdm_roh: bytes) -> bytes:
-    cmd = baue_rdm_cmd_pdu(rdm_roh)
-    return flags_laenge(7 + len(cmd)) + struct.pack(">I", K.VECTOR_REQUEST_RDM_CMD) + cmd
+def build_request(rdm_raw: bytes) -> bytes:
+    cmd = build_rdm_cmd_pdu(rdm_raw)
+    return flags_length(7 + len(cmd)) + struct.pack(">I", C.VECTOR_REQUEST_RDM_CMD) + cmd
 
 
-def baue_notification(rdm_nachrichten: list[bytes]) -> bytes:
-    cmds = b"".join(baue_rdm_cmd_pdu(r) for r in rdm_nachrichten)
-    return flags_laenge(7 + len(cmds)) + struct.pack(">I", K.VECTOR_NOTIFICATION_RDM_CMD) + cmds
+def build_notification(rdm_messages: list[bytes]) -> bytes:
+    cmds = b"".join(build_rdm_cmd_pdu(r) for r in rdm_messages)
+    return flags_length(7 + len(cmds)) + struct.pack(">I", C.VECTOR_NOTIFICATION_RDM_CMD) + cmds
 
 
-def lese_request_oder_notification(daten: bytes, erwarteter_vektor: int) -> list[bytes]:
-    teile = pdus_aufteilen(daten)
-    if len(teile) != 1:
-        raise ProtokollFehler("Genau eine Request-/Notification-PDU erwartet")
-    pdu, kopf = teile[0]
-    if len(pdu) < kopf + 4:
-        raise ProtokollFehler("Request-/Notification-PDU zu kurz")
-    (vektor,) = struct.unpack(">I", pdu[kopf:kopf + 4])
-    if vektor != erwarteter_vektor:
-        raise ProtokollFehler(f"Unerwarteter Vektor {vektor:#x}")
-    return _lese_rdm_cmd_pdus(bytes(pdu[kopf + 4:]))
+def read_request_or_notification(data: bytes, expected_vector: int) -> list[bytes]:
+    parts = split_pdus(data)
+    if len(parts) != 1:
+        raise ProtocolError("Expected exactly one request/notification PDU")
+    pdu, header = parts[0]
+    if len(pdu) < header + 4:
+        raise ProtocolError("Request/notification PDU too short")
+    (vector,) = struct.unpack(">I", pdu[header:header + 4])
+    if vector != expected_vector:
+        raise ProtocolError(f"Unexpected vector {vector:#x}")
+    return _read_rdm_cmd_pdus(bytes(pdu[header + 4:]))
 
 
-def baue_status(code: int, text: str = "") -> bytes:
+def build_status(code: int, text: str = "") -> bytes:
     t = text.encode("utf-8")[:1024]
-    return flags_laenge(5 + len(t)) + struct.pack(">H", code) + t
+    return flags_length(5 + len(t)) + struct.pack(">H", code) + t
 
 
-def lese_status(daten: bytes) -> tuple[int, str]:
-    teile = pdus_aufteilen(daten)
-    if len(teile) != 1:
-        raise ProtokollFehler("Genau eine Status-PDU erwartet")
-    pdu, kopf = teile[0]
-    if len(pdu) < kopf + 2:
-        raise ProtokollFehler("Status-PDU zu kurz")
-    (code,) = struct.unpack(">H", pdu[kopf:kopf + 2])
-    return code, bytes(pdu[kopf + 2:]).decode("utf-8", errors="replace")
+def read_status(data: bytes) -> tuple[int, str]:
+    parts = split_pdus(data)
+    if len(parts) != 1:
+        raise ProtocolError("Expected exactly one status PDU")
+    pdu, header = parts[0]
+    if len(pdu) < header + 2:
+        raise ProtocolError("Status PDU too short")
+    (code,) = struct.unpack(">H", pdu[header:header + 2])
+    return code, bytes(pdu[header + 2:]).decode("utf-8", errors="replace")

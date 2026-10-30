@@ -1,12 +1,12 @@
-"""Simuliertes RDMnet-Gerät für Offline-Tests.
+"""Simulated RDMnet device for offline tests.
 
-Zwei Betriebsarten:
-* Gateway (Standard): RDMnet-Gerät mit Default-Responder (Endpoint 0) und
-  einem physischen Port (Endpoint 1), an dem ein simulierter RDM-Scheinwerfer hängt.
-* Nativ: Der Scheinwerfer ist selbst das RDMnet-Gerät (Endpoint 0).
+Two operating modes:
+* Gateway (default): RDMnet device with a default responder (endpoint 0) and
+  one physical port (endpoint 1) to which a simulated RDM fixture is connected.
+* Native: the fixture itself is the RDMnet device (endpoint 0).
 
-Alle Werte sind SIMULATION. Hersteller/Modell sind bewusst generisch und
-stellen kein reales Gerät dar.
+All values are SIMULATION. Manufacturer/model are deliberately generic and
+do not represent a real device.
 """
 
 from __future__ import annotations
@@ -17,69 +17,69 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
-from . import konstanten as K
+from . import constants as C
 from . import pdu as P
-from . import rdm_parameter as R
-from .klient import RptKlient
-from .rdm import RdmFormatFehler, RdmNachricht, Uid, ist_geraete_broadcast
+from . import rdm_params as R
+from .client import RptClient
+from .rdm import RdmFormatError, RdmMessage, Uid, is_device_broadcast
 
 
 @dataclass
 class SimSensor:
     definition: R.SensorDefinition
-    startwert: float  # in physikalischer Einheit
-    anstieg_je_s: float = 0.0  # einfache lineare Drift (nur Simulation)
-    endwert: float | None = None
+    start_value: float  # in physical unit
+    rise_per_s: float = 0.0  # simple linear drift (simulation only)
+    end_value: float | None = None
 
-    def rohwert(self, sekunden: float) -> int:
-        wert = self.startwert + self.anstieg_je_s * sekunden
-        if self.endwert is not None:
-            wert = min(wert, self.endwert) if self.anstieg_je_s >= 0 else max(wert, self.endwert)
-        roh = round(wert / self.definition.faktor)
-        return max(-32768, min(32767, roh))
+    def raw_value(self, seconds: float) -> int:
+        value = self.start_value + self.rise_per_s * seconds
+        if self.end_value is not None:
+            value = min(value, self.end_value) if self.rise_per_s >= 0 else max(value, self.end_value)
+        raw = round(value / self.definition.factor)
+        return max(-32768, min(32767, raw))
 
 
 @dataclass
-class SimScheinwerfer:
-    """Simulierter RDM-Responder (Scheinwerfer)."""
+class SimFixture:
+    """Simulated RDM responder (fixture)."""
 
     uid: Uid
-    hersteller_label: str = "pyrdmnet Simulator"
-    modell: str = "SIM-PAR RGBL"
+    manufacturer_label: str = "pyrdmnet Simulator"
+    model: str = "SIM-PAR RGBL"
     software_label: str = "SIM 1.0.0"
-    geraete_label: str = "Messplatz 1"
-    modell_id: int = 0x0101
+    device_label: str = "Test bench 1"
+    model_id: int = 0x0101
     software_version_id: int = 0x00010000
-    produktkategorie: int = 0x0101  # Scheinwerfer, fest
+    product_category: int = 0x0101  # fixture, fixed
     personalities: list[R.Personality] = field(default_factory=lambda: [
-        R.Personality(1, 4, "Direkt 4ch"),
-        R.Personality(2, 6, "Direkt 6ch"),
+        R.Personality(1, 4, "Direct 4ch"),
+        R.Personality(2, 6, "Direct 6ch"),
         R.Personality(3, 5, "HSIC 5ch"),
     ])
     personality: int = 2
-    startadresse: int = 100
-    geraete_stunden: int = 1234
-    lampen_stunden: int | None = None  # LED: nicht unterstützt -> NACK
-    sensoren: list[SimSensor] = field(default_factory=list)
-    schreibschutz: bool = False
-    ack_timer_einmal: set = field(default_factory=set)  # PIDs, die einmal ACK_TIMER liefern
-    overflow_pids: set = field(default_factory=set)  # PIDs, deren Antwort geteilt wird
+    start_address: int = 100
+    device_hours: int = 1234
+    lamp_hours: int | None = None  # LED: not supported -> NACK
+    sensors: list[SimSensor] = field(default_factory=list)
+    write_protect: bool = False
+    ack_timer_once: set = field(default_factory=set)  # PIDs that return ACK_TIMER once
+    overflow_pids: set = field(default_factory=set)  # PIDs whose response is split
     start: float = field(default_factory=time.monotonic)
-    set_protokoll: list[tuple[int, bytes]] = field(default_factory=list)
-    zusatz_pids: list[int] = field(default_factory=list)  # z. B. Endpoint-PIDs beim Gateway
+    set_log: list[tuple[int, bytes]] = field(default_factory=list)
+    extra_pids: list[int] = field(default_factory=list)  # e.g. endpoint PIDs on the gateway
 
     def __post_init__(self) -> None:
-        if not self.sensoren:
-            self.sensoren = [
-                SimSensor(R.SensorDefinition(0, 0x00, 0x01, 0x00, -40, 150, 10, 85, 0x03, "LED Temperatur"), 25.0, 0.5, 68.0),
-                SimSensor(R.SensorDefinition(1, 0x00, 0x01, 0x00, -40, 120, 0, 60, 0x03, "Gehaeuse"), 23.0, 0.1, 41.0),
-                SimSensor(R.SensorDefinition(2, 0x01, 0x04, 0x01, 900, 2650, 2000, 2500, 0x01, "Netzspannung"), 230.4),
-                SimSensor(R.SensorDefinition(3, 0x1D, 0x1C, 0x13, 0, 4096, 0, 4096, 0x00, "Speicher"), 512000.0),
+        if not self.sensors:
+            self.sensors = [
+                SimSensor(R.SensorDefinition(0, 0x00, 0x01, 0x00, -40, 150, 10, 85, 0x03, "LED temperature"), 25.0, 0.5, 68.0),
+                SimSensor(R.SensorDefinition(1, 0x00, 0x01, 0x00, -40, 120, 0, 60, 0x03, "Housing"), 23.0, 0.1, 41.0),
+                SimSensor(R.SensorDefinition(2, 0x01, 0x04, 0x01, 900, 2650, 2000, 2500, 0x01, "Mains voltage"), 230.4),
+                SimSensor(R.SensorDefinition(3, 0x1D, 0x1C, 0x13, 0, 4096, 0, 4096, 0x00, "Memory"), 512000.0),
             ]
 
-    # --- Hilfen
-    def _p(self, nr: int) -> R.Personality | None:
-        return next((p for p in self.personalities if p.nummer == nr), None)
+    # --- helpers
+    def _p(self, num: int) -> R.Personality | None:
+        return next((p for p in self.personalities if p.number == num), None)
 
     @property
     def footprint(self) -> int:
@@ -87,186 +87,186 @@ class SimScheinwerfer:
         return p.footprint if p else 0
 
     def pids(self) -> list[int]:
-        basis = [K.PID_DEVICE_INFO, K.PID_DEVICE_MODEL_DESCRIPTION, K.PID_MANUFACTURER_LABEL, K.PID_DEVICE_LABEL,
-                 K.PID_SOFTWARE_VERSION_LABEL, K.PID_DMX_PERSONALITY, K.PID_DMX_PERSONALITY_DESCRIPTION,
-                 K.PID_DMX_START_ADDRESS, K.PID_SENSOR_DEFINITION, K.PID_SENSOR_VALUE, K.PID_DEVICE_HOURS,
-                 K.PID_IDENTIFY_DEVICE]
-        if self.lampen_stunden is not None:
-            basis.append(K.PID_LAMP_HOURS)
-        return basis + list(self.zusatz_pids)
+        base = [C.PID_DEVICE_INFO, C.PID_DEVICE_MODEL_DESCRIPTION, C.PID_MANUFACTURER_LABEL, C.PID_DEVICE_LABEL,
+                 C.PID_SOFTWARE_VERSION_LABEL, C.PID_DMX_PERSONALITY, C.PID_DMX_PERSONALITY_DESCRIPTION,
+                 C.PID_DMX_START_ADDRESS, C.PID_SENSOR_DEFINITION, C.PID_SENSOR_VALUE, C.PID_DEVICE_HOURS,
+                 C.PID_IDENTIFY_DEVICE]
+        if self.lamp_hours is not None:
+            base.append(C.PID_LAMP_HOURS)
+        return base + list(self.extra_pids)
 
-    # --- Antwortlogik
-    def beantworten(self, a: RdmNachricht) -> RdmNachricht | None:
-        if a.ziel != self.uid and not a.ziel.ist_broadcast:
+    # --- response logic
+    def respond(self, a: RdmMessage) -> RdmMessage | None:
+        if a.dest != self.uid and not a.dest.is_broadcast:
             return None
-        if a.command_class == K.CC_SET:
+        if a.command_class == C.CC_SET:
             return self._set(a)
-        if a.command_class != K.CC_GET:
-            return a.antwort(K.ANTWORT_NACK, struct.pack(">H", K.NR_UNSUPPORTED_COMMAND_CLASS))
-        if a.pid in self.ack_timer_einmal:
-            self.ack_timer_einmal.discard(a.pid)
-            return a.antwort(K.ANTWORT_ACK_TIMER, struct.pack(">H", 1))  # 100 ms
-        daten = self._get(a)
-        if isinstance(daten, int):
-            return a.antwort(K.ANTWORT_NACK, struct.pack(">H", daten))
-        if a.pid in self.overflow_pids and len(daten) > 4:
-            # Teil 1 als ACK_OVERFLOW, beim nächsten GET der Rest
+        if a.command_class != C.CC_GET:
+            return a.response(C.RESPONSE_NACK, struct.pack(">H", C.NR_UNSUPPORTED_COMMAND_CLASS))
+        if a.pid in self.ack_timer_once:
+            self.ack_timer_once.discard(a.pid)
+            return a.response(C.RESPONSE_ACK_TIMER, struct.pack(">H", 1))  # 100 ms
+        data = self._get(a)
+        if isinstance(data, int):
+            return a.response(C.RESPONSE_NACK, struct.pack(">H", data))
+        if a.pid in self.overflow_pids and len(data) > 4:
+            # part 1 as ACK_OVERFLOW, the rest on the next GET
             self.overflow_pids.discard(a.pid)
-            self._overflow_rest = (a.pid, daten[4:])
-            return a.antwort(K.ANTWORT_ACK_OVERFLOW, daten[:4])
+            self._overflow_rest = (a.pid, data[4:])
+            return a.response(C.RESPONSE_ACK_OVERFLOW, data[:4])
         rest = getattr(self, "_overflow_rest", None)
         if rest and rest[0] == a.pid:
             self._overflow_rest = None
-            return a.antwort(K.ANTWORT_ACK, rest[1])
-        return a.antwort(K.ANTWORT_ACK, daten)
+            return a.response(C.RESPONSE_ACK, rest[1])
+        return a.response(C.RESPONSE_ACK, data)
 
-    def _get(self, a: RdmNachricht) -> bytes | int:
-        pid, d = a.pid, a.daten
+    def _get(self, a: RdmMessage) -> bytes | int:
+        pid, d = a.pid, a.data
         t = time.monotonic() - self.start
-        if pid == K.PID_SUPPORTED_PARAMETERS:
+        if pid == C.PID_SUPPORTED_PARAMETERS:
             return b"".join(struct.pack(">H", p) for p in self.pids())
-        if pid == K.PID_DEVICE_INFO:
-            return R.baue_device_info(R.DeviceInfo(0x0100, self.modell_id, self.produktkategorie,
+        if pid == C.PID_DEVICE_INFO:
+            return R.build_device_info(R.DeviceInfo(0x0100, self.model_id, self.product_category,
                                                    self.software_version_id, self.footprint, self.personality,
-                                                   len(self.personalities), self.startadresse, 0,
-                                                   len(self.sensoren)))
-        if pid == K.PID_DEVICE_MODEL_DESCRIPTION:
-            return R.baue_text(self.modell)
-        if pid == K.PID_MANUFACTURER_LABEL:
-            return R.baue_text(self.hersteller_label)
-        if pid == K.PID_DEVICE_LABEL:
-            return R.baue_text(self.geraete_label)
-        if pid == K.PID_SOFTWARE_VERSION_LABEL:
-            return R.baue_text(self.software_label)
-        if pid == K.PID_DMX_PERSONALITY:
+                                                   len(self.personalities), self.start_address, 0,
+                                                   len(self.sensors)))
+        if pid == C.PID_DEVICE_MODEL_DESCRIPTION:
+            return R.build_text(self.model)
+        if pid == C.PID_MANUFACTURER_LABEL:
+            return R.build_text(self.manufacturer_label)
+        if pid == C.PID_DEVICE_LABEL:
+            return R.build_text(self.device_label)
+        if pid == C.PID_SOFTWARE_VERSION_LABEL:
+            return R.build_text(self.software_label)
+        if pid == C.PID_DMX_PERSONALITY:
             return bytes((self.personality, len(self.personalities)))
-        if pid == K.PID_DMX_PERSONALITY_DESCRIPTION:
+        if pid == C.PID_DMX_PERSONALITY_DESCRIPTION:
             if len(d) != 1:
-                return K.NR_FORMAT_ERROR
+                return C.NR_FORMAT_ERROR
             p = self._p(d[0])
-            return R.baue_personality_beschreibung(p) if p else K.NR_DATA_OUT_OF_RANGE
-        if pid == K.PID_DMX_START_ADDRESS:
-            return struct.pack(">H", self.startadresse)
-        if pid == K.PID_SENSOR_DEFINITION:
-            if len(d) != 1 or d[0] >= len(self.sensoren):
-                return K.NR_DATA_OUT_OF_RANGE
-            return R.baue_sensor_definition(self.sensoren[d[0]].definition)
-        if pid == K.PID_SENSOR_VALUE:
-            if len(d) != 1 or d[0] >= len(self.sensoren):
-                return K.NR_DATA_OUT_OF_RANGE
-            s = self.sensoren[d[0]]
-            akt = s.rohwert(t)
-            return R.baue_sensor_wert(R.SensorRohwert(d[0], akt, s.rohwert(0), akt, akt))
-        if pid == K.PID_DEVICE_HOURS:
-            return struct.pack(">I", self.geraete_stunden)
-        if pid == K.PID_LAMP_HOURS and self.lampen_stunden is not None:
-            return struct.pack(">I", self.lampen_stunden)
-        if pid == K.PID_IDENTIFY_DEVICE:
+            return R.build_personality_description(p) if p else C.NR_DATA_OUT_OF_RANGE
+        if pid == C.PID_DMX_START_ADDRESS:
+            return struct.pack(">H", self.start_address)
+        if pid == C.PID_SENSOR_DEFINITION:
+            if len(d) != 1 or d[0] >= len(self.sensors):
+                return C.NR_DATA_OUT_OF_RANGE
+            return R.build_sensor_definition(self.sensors[d[0]].definition)
+        if pid == C.PID_SENSOR_VALUE:
+            if len(d) != 1 or d[0] >= len(self.sensors):
+                return C.NR_DATA_OUT_OF_RANGE
+            s = self.sensors[d[0]]
+            current = s.raw_value(t)
+            return R.build_sensor_value(R.SensorRawValue(d[0], current, s.raw_value(0), current, current))
+        if pid == C.PID_DEVICE_HOURS:
+            return struct.pack(">I", self.device_hours)
+        if pid == C.PID_LAMP_HOURS and self.lamp_hours is not None:
+            return struct.pack(">I", self.lamp_hours)
+        if pid == C.PID_IDENTIFY_DEVICE:
             return b"\x00"
-        return K.NR_UNKNOWN_PID
+        return C.NR_UNKNOWN_PID
 
-    def _set(self, a: RdmNachricht) -> RdmNachricht:
-        pid, d = a.pid, a.daten
-        nack = lambda g: a.antwort(K.ANTWORT_NACK, struct.pack(">H", g))  # noqa: E731
-        if self.schreibschutz:
-            return nack(K.NR_WRITE_PROTECT)
-        if pid == K.PID_DMX_PERSONALITY:
+    def _set(self, a: RdmMessage) -> RdmMessage:
+        pid, d = a.pid, a.data
+        nack = lambda g: a.response(C.RESPONSE_NACK, struct.pack(">H", g))  # noqa: E731
+        if self.write_protect:
+            return nack(C.NR_WRITE_PROTECT)
+        if pid == C.PID_DMX_PERSONALITY:
             if len(d) != 1:
-                return nack(K.NR_FORMAT_ERROR)
+                return nack(C.NR_FORMAT_ERROR)
             if not self._p(d[0]):
-                return nack(K.NR_DATA_OUT_OF_RANGE)
+                return nack(C.NR_DATA_OUT_OF_RANGE)
             self.personality = d[0]
-        elif pid == K.PID_DMX_START_ADDRESS:
+        elif pid == C.PID_DMX_START_ADDRESS:
             if len(d) != 2:
-                return nack(K.NR_FORMAT_ERROR)
-            (adr,) = struct.unpack(">H", d)
-            if not 1 <= adr <= 512 or adr + self.footprint - 1 > 512:
-                return nack(K.NR_DATA_OUT_OF_RANGE)
-            self.startadresse = adr
-        elif pid == K.PID_IDENTIFY_DEVICE:
+                return nack(C.NR_FORMAT_ERROR)
+            (dmx_addr,) = struct.unpack(">H", d)
+            if not 1 <= dmx_addr <= 512 or dmx_addr + self.footprint - 1 > 512:
+                return nack(C.NR_DATA_OUT_OF_RANGE)
+            self.start_address = dmx_addr
+        elif pid == C.PID_IDENTIFY_DEVICE:
             if len(d) != 1 or d[0] > 1:
-                return nack(K.NR_FORMAT_ERROR)
+                return nack(C.NR_FORMAT_ERROR)
         else:
-            return nack(K.NR_UNSUPPORTED_COMMAND_CLASS if pid in self.pids() else K.NR_UNKNOWN_PID)
-        self.set_protokoll.append((pid, bytes(d)))
-        return a.antwort(K.ANTWORT_ACK)
+            return nack(C.NR_UNSUPPORTED_COMMAND_CLASS if pid in self.pids() else C.NR_UNKNOWN_PID)
+        self.set_log.append((pid, bytes(d)))
+        return a.response(C.RESPONSE_ACK)
 
 
-class SimulierterGateway(RptKlient):
-    """RDMnet-Gerät (RPT Device) mit simuliertem Scheinwerfer."""
+class SimulatedGateway(RptClient):
+    """RDMnet device (RPT device) with a simulated fixture."""
 
-    def __init__(self, uid: Uid | None = None, scope: str = K.E133_STANDARD_SCOPE, nativ: bool = False,
-                 scheinwerfer: SimScheinwerfer | None = None, universe: int = 1, antwort_verzoegerung_s: float = 0.0,
+    def __init__(self, uid: Uid | None = None, scope: str = C.E133_DEFAULT_SCOPE, native: bool = False,
+                 fixture: SimFixture | None = None, universe: int = 1, response_delay_s: float = 0.0,
                  **kwargs):
-        uid = uid or Uid(K.ESTA_PROTOTYP_HERSTELLER, 0x00000100)
-        super().__init__(K.RPT_CLIENT_TYP_GERAET, uid, scope, uuid.uuid4(), **kwargs)
-        self.nativ = nativ
+        uid = uid or Uid(C.ESTA_PROTOTYPE_MANUFACTURER, 0x00000100)
+        super().__init__(C.RPT_CLIENT_TYPE_DEVICE, uid, scope, uuid.uuid4(), **kwargs)
+        self.native = native
         self.universe = universe
-        self.verzoegerung = antwort_verzoegerung_s
-        self.stumm = False  # Test: antwortet nicht (Zeitüberschreitung beim Controller)
-        if nativ:
-            self.scheinwerfer = scheinwerfer or SimScheinwerfer(uid=uid)
+        self.delay = response_delay_s
+        self.mute = False  # test: does not respond (timeout at the controller)
+        if native:
+            self.fixture = fixture or SimFixture(uid=uid)
         else:
-            self.scheinwerfer = scheinwerfer or SimScheinwerfer(uid=Uid(K.ESTA_PROTOTYP_HERSTELLER, 0x00000201))
-        self.gateway_responder = SimScheinwerfer(uid=uid, hersteller_label="pyrdmnet Simulator",
-                                                 modell="SIM Gateway 1 Port", produktkategorie=0x0801,
-                                                 personalities=[], personality=0, startadresse=0xFFFF,
-                                                 zusatz_pids=[K.PID_ENDPOINT_LIST, K.PID_ENDPOINT_TO_UNIVERSE,
-                                                              K.PID_ENDPOINT_MODE, K.PID_ENDPOINT_LABEL,
-                                                              K.PID_ENDPOINT_RESPONDERS],
-                                                 sensoren=[SimSensor(R.SensorDefinition(
+            self.fixture = fixture or SimFixture(uid=Uid(C.ESTA_PROTOTYPE_MANUFACTURER, 0x00000201))
+        self.gateway_responder = SimFixture(uid=uid, manufacturer_label="pyrdmnet Simulator",
+                                                 model="SIM Gateway 1 Port", product_category=0x0801,
+                                                 personalities=[], personality=0, start_address=0xFFFF,
+                                                 extra_pids=[C.PID_ENDPOINT_LIST, C.PID_ENDPOINT_TO_UNIVERSE,
+                                                              C.PID_ENDPOINT_MODE, C.PID_ENDPOINT_LABEL,
+                                                              C.PID_ENDPOINT_RESPONDERS],
+                                                 sensors=[SimSensor(R.SensorDefinition(
                                                      0, 0x00, 0x01, 0x00, -20, 90, 0, 60, 0x00, "Gateway"), 31.0)])
 
-    async def _bei_rpt(self, rpt: P.RptPdu) -> None:
-        k = rpt.kopf
-        if k.vektor != K.VECTOR_RPT_REQUEST or self.stumm:
+    async def _on_rpt(self, rpt: P.RptPdu) -> None:
+        k = rpt.header
+        if k.vector != C.VECTOR_RPT_REQUEST or self.mute:
             return
-        if self.verzoegerung:
-            await asyncio.sleep(self.verzoegerung)
+        if self.delay:
+            await asyncio.sleep(self.delay)
         try:
-            (roh,) = P.lese_request_oder_notification(rpt.daten, K.VECTOR_REQUEST_RDM_CMD)
-            anfrage = RdmNachricht.dekodieren(roh)
-        except (P.ProtokollFehler, RdmFormatFehler, ValueError):
-            await self._status(k, K.RPT_STATUS_INVALID_MESSAGE)
+            (raw,) = P.read_request_or_notification(rpt.data, C.VECTOR_REQUEST_RDM_CMD)
+            request = RdmMessage.decode(raw)
+        except (P.ProtocolError, RdmFormatError, ValueError):
+            await self._status(k, C.RPT_STATUS_INVALID_MESSAGE)
             return
-        if ist_geraete_broadcast(k.ziel) or anfrage.ziel.ist_broadcast:
-            return  # E1.20: auf Broadcasts wird nicht geantwortet
-        antwort = self._responder_antwort(k.ziel_endpoint, anfrage)
-        if isinstance(antwort, int):
-            await self._status(k, antwort)
+        if is_device_broadcast(k.dest) or request.dest.is_broadcast:
+            return  # E1.20: broadcasts are not answered
+        response = self._responder_reply(k.dest_endpoint, request)
+        if isinstance(response, int):
+            await self._status(k, response)
             return
-        rkopf = P.RptKopf(K.VECTOR_RPT_NOTIFICATION, self.uid, k.ziel_endpoint, k.quelle, K.E133_NULL_ENDPOINT,
-                          k.sequenz)
-        await self.sende_rpt(rkopf, P.baue_notification([roh, antwort.kodieren()]))
+        rheader = P.RptHeader(C.VECTOR_RPT_NOTIFICATION, self.uid, k.dest_endpoint, k.source, C.E133_NULL_ENDPOINT,
+                          k.sequence)
+        await self.send_rpt(rheader, P.build_notification([raw, response.encode()]))
 
-    def _responder_antwort(self, endpoint: int, a: RdmNachricht) -> RdmNachricht | int:
-        if endpoint == K.E133_NULL_ENDPOINT:
-            if self.nativ:
-                return self.scheinwerfer.beantworten(a) or K.RPT_STATUS_UNKNOWN_RDM_UID
-            if a.ziel != self.uid:
-                return K.RPT_STATUS_UNKNOWN_RDM_UID
-            if a.command_class == K.CC_GET and a.pid == K.PID_ENDPOINT_LIST:
-                return a.antwort(K.ANTWORT_ACK, R.baue_endpoint_liste(1, [R.Endpoint(1, K.ENDPOINT_TYP_PHYSISCH)]))
-            if a.command_class == K.CC_GET and a.pid == K.PID_ENDPOINT_RESPONDERS:
-                if a.daten != b"\x00\x01":
-                    return a.antwort(K.ANTWORT_NACK, struct.pack(">H", K.NR_DATA_OUT_OF_RANGE))
-                return a.antwort(K.ANTWORT_ACK, R.baue_endpoint_responder(1, 1, [self.scheinwerfer.uid]))
-            if a.command_class == K.CC_GET and a.pid in (K.PID_ENDPOINT_MODE, K.PID_ENDPOINT_LABEL):
-                if a.daten != b"\x00\x01":
-                    return a.antwort(K.ANTWORT_NACK, struct.pack(">H", K.NR_DATA_OUT_OF_RANGE))
-                inhalt = b"\x02" if a.pid == K.PID_ENDPOINT_MODE else R.baue_text("DMX Port 1")
-                return a.antwort(K.ANTWORT_ACK, b"\x00\x01" + inhalt)
-            if a.command_class == K.CC_GET and a.pid == K.PID_ENDPOINT_TO_UNIVERSE:
-                if a.daten != b"\x00\x01":
-                    return a.antwort(K.ANTWORT_NACK, struct.pack(">H", K.NR_DATA_OUT_OF_RANGE))
-                return a.antwort(K.ANTWORT_ACK, struct.pack(">HH", 1, self.universe))
-            return self.gateway_responder.beantworten(a) or K.RPT_STATUS_UNKNOWN_RDM_UID
-        if endpoint == 1 and not self.nativ:
-            if a.ziel != self.scheinwerfer.uid:
-                return K.RPT_STATUS_UNKNOWN_RDM_UID
-            return self.scheinwerfer.beantworten(a) or K.RPT_STATUS_RDM_TIMEOUT
-        return K.RPT_STATUS_UNKNOWN_ENDPOINT
+    def _responder_reply(self, endpoint: int, a: RdmMessage) -> RdmMessage | int:
+        if endpoint == C.E133_NULL_ENDPOINT:
+            if self.native:
+                return self.fixture.respond(a) or C.RPT_STATUS_UNKNOWN_RDM_UID
+            if a.dest != self.uid:
+                return C.RPT_STATUS_UNKNOWN_RDM_UID
+            if a.command_class == C.CC_GET and a.pid == C.PID_ENDPOINT_LIST:
+                return a.response(C.RESPONSE_ACK, R.build_endpoint_list(1, [R.Endpoint(1, C.ENDPOINT_TYPE_PHYSICAL)]))
+            if a.command_class == C.CC_GET and a.pid == C.PID_ENDPOINT_RESPONDERS:
+                if a.data != b"\x00\x01":
+                    return a.response(C.RESPONSE_NACK, struct.pack(">H", C.NR_DATA_OUT_OF_RANGE))
+                return a.response(C.RESPONSE_ACK, R.build_endpoint_responders(1, 1, [self.fixture.uid]))
+            if a.command_class == C.CC_GET and a.pid in (C.PID_ENDPOINT_MODE, C.PID_ENDPOINT_LABEL):
+                if a.data != b"\x00\x01":
+                    return a.response(C.RESPONSE_NACK, struct.pack(">H", C.NR_DATA_OUT_OF_RANGE))
+                content = b"\x02" if a.pid == C.PID_ENDPOINT_MODE else R.build_text("DMX Port 1")
+                return a.response(C.RESPONSE_ACK, b"\x00\x01" + content)
+            if a.command_class == C.CC_GET and a.pid == C.PID_ENDPOINT_TO_UNIVERSE:
+                if a.data != b"\x00\x01":
+                    return a.response(C.RESPONSE_NACK, struct.pack(">H", C.NR_DATA_OUT_OF_RANGE))
+                return a.response(C.RESPONSE_ACK, struct.pack(">HH", 1, self.universe))
+            return self.gateway_responder.respond(a) or C.RPT_STATUS_UNKNOWN_RDM_UID
+        if endpoint == 1 and not self.native:
+            if a.dest != self.fixture.uid:
+                return C.RPT_STATUS_UNKNOWN_RDM_UID
+            return self.fixture.respond(a) or C.RPT_STATUS_RDM_TIMEOUT
+        return C.RPT_STATUS_UNKNOWN_ENDPOINT
 
-    async def _status(self, k: P.RptKopf, code: int) -> None:
-        rkopf = P.RptKopf(K.VECTOR_RPT_STATUS, self.uid, k.ziel_endpoint, k.quelle, K.E133_NULL_ENDPOINT, k.sequenz)
-        await self.sende_rpt(rkopf, P.baue_status(code))
+    async def _status(self, k: P.RptHeader, code: int) -> None:
+        rheader = P.RptHeader(C.VECTOR_RPT_STATUS, self.uid, k.dest_endpoint, k.source, C.E133_NULL_ENDPOINT, k.sequence)
+        await self.send_rpt(rheader, P.build_status(code))

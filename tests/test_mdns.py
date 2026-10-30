@@ -1,4 +1,4 @@
-"""mDNS-Anmeldung: Befehlszeile für Bonjour und Ablauf mit einem nachgebildeten dns-sd."""
+"""mDNS registration: command line for Bonjour and flow with a fake dns-sd."""
 
 import os
 import stat
@@ -13,10 +13,10 @@ from pyrdmnet.rdm import Uid
 
 CID = uuid.UUID("12345678-90ab-cdef-1234-567890abcdef")
 
-# Nachbildung von macOS dns-sd: -R meldet Erfolg und läuft weiter, -B listet den Dienst
+# Fake macOS dns-sd: -R reports success and keeps running, -B lists the service
 FAKE = r'''#!/bin/sh
 if [ "$1" = "-R" ]; then
-  echo "$@" > "$(dirname "$0")/aufruf.txt"
+  echo "$@" > "$(dirname "$0")/call.txt"
   echo "$2" > "$(dirname "$0")/name.txt"
   echo "Registering Service $2.$3 port $5"
   echo "Got a reply for service $2.$3local.: Name now registered and active"
@@ -30,9 +30,9 @@ fi
 '''
 
 
-class TestBefehl(unittest.TestCase):
-    def test_dns_sd_befehl(self):
-        b = dnssd.dns_sd_befehl("default", CID, Uid(0x7FF0, 1), 8888)
+class TestCommand(unittest.TestCase):
+    def test_dns_sd_command(self):
+        b = dnssd.dns_sd_command("default", CID, Uid(0x7FF0, 1), 8888)
         self.assertEqual(b[:6], ["dns-sd", "-R", "pyrdmnet Broker default 12345678", "_rdmnet._tcp,_default",
                                  "local.", "8888"])
         self.assertIn("E133Scope=default", b)
@@ -41,21 +41,21 @@ class TestBefehl(unittest.TestCase):
         self.assertIn("TxtVers=1", b)
 
     def test_txt(self):
-        t = dnssd.txt_eintraege("buehne", CID, Uid(0x7FF0, 1))
-        self.assertEqual((t["E133Scope"], t["E133Vers"]), ("buehne", "1"))
+        t = dnssd.txt_entries("stage", CID, Uid(0x7FF0, 1))
+        self.assertEqual((t["E133Scope"], t["E133Vers"]), ("stage", "1"))
 
-    def test_kein_weg(self):
+    def test_no_method(self):
         with mock.patch("shutil.which", return_value=None), mock.patch.dict("sys.modules", {"zeroconf": None}):
             with self.assertRaises(RuntimeError):
-                dnssd.DnssdAnmeldung("default", CID, Uid(0x7FF0, 1), "127.0.0.1", 8888)
+                dnssd.DnssdRegistration("default", CID, Uid(0x7FF0, 1), "127.0.0.1", 8888)
 
 
-class TestMitNachgebildetemDnsSd(unittest.TestCase):
+class TestWithFakeDnsSd(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        pfad = Path(self.tmp.name) / "dns-sd"
-        pfad.write_text(FAKE)
-        pfad.chmod(pfad.stat().st_mode | stat.S_IEXEC)
+        path = Path(self.tmp.name) / "dns-sd"
+        path.write_text(FAKE)
+        path.chmod(path.stat().st_mode | stat.S_IEXEC)
         self.env = mock.patch.dict(os.environ, {"PATH": f"{self.tmp.name}{os.pathsep}{os.environ['PATH']}"})
         self.env.start()
 
@@ -63,24 +63,24 @@ class TestMitNachgebildetemDnsSd(unittest.TestCase):
         self.env.stop()
         self.tmp.cleanup()
 
-    def test_anmelden_selbsttest_beenden(self):
-        d = dnssd.DnssdAnmeldung("default", CID, Uid(0x7FF0, 1), "127.0.0.1", 8888)
-        self.assertEqual(d.weg, "dns-sd")
-        aufruf = (Path(self.tmp.name) / "aufruf.txt").read_text()
-        self.assertIn("_rdmnet._tcp,_default local. 8888", aufruf)
-        self.assertEqual(len(d.selbsttest(dauer_s=1)), 1)
-        d.beenden()
+    def test_register_self_test_stop(self):
+        d = dnssd.DnssdRegistration("default", CID, Uid(0x7FF0, 1), "127.0.0.1", 8888)
+        self.assertEqual(d.method, "dns-sd")
+        call = (Path(self.tmp.name) / "call.txt").read_text()
+        self.assertIn("_rdmnet._tcp,_default local. 8888", call)
+        self.assertEqual(len(d.self_test(duration_s=1)), 1)
+        d.stop()
         self.assertIsNotNone(d._proc.poll())
 
-    def test_livetest_meldet_mdns(self):
+    def test_live_test_reports_mdns(self):
         import asyncio
-        from pyrdmnet.livetest import LiveKonfig, LiveTest
-        aus: list[str] = []
-        k = LiveKonfig(host="127.0.0.1", port=0, ordner=Path(self.tmp.name), warte_auf_geraete_s=1, dnssd=True)
-        erg = asyncio.run(LiveTest(k, ausgabe=aus.append).ausfuehren())
-        self.assertTrue(erg["mdns"]["aktiv"])
-        self.assertTrue(erg["mdns_selbsttest"])
-        self.assertTrue(any("automatisch (mDNS/DNS-SD)" in z for z in aus))
+        from pyrdmnet.live_test import LiveConfig, LiveTest
+        reader: list[str] = []
+        k = LiveConfig(host="127.0.0.1", port=0, folder=Path(self.tmp.name), wait_for_devices_s=1, dnssd=True)
+        res = asyncio.run(LiveTest(k, output=reader.append).run())
+        self.assertTrue(res["mdns"]["active"])
+        self.assertTrue(res["mdns_self_test"])
+        self.assertTrue(any("automatic broker discovery (mDNS/DNS-SD)" in z for z in reader))
 
 
 if __name__ == "__main__":

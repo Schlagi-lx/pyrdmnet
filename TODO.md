@@ -1,25 +1,30 @@
-# Todo
+# To do
 
-## Protokoll / Normnähe (E1.33)
+## Protocol / standard compliance (E1.33)
 
-- [x] 1. Broker als RDM-Responder: Anfragen an die eigene Broker-UID beantworten
-      (`COMPONENT_SCOPE`, `SEARCH_DOMAIN`, `BROKER_STATUS`, Basis-PIDs nach E1.20)
-- [x] 2. `CLIENT_ENTRY_UPDATE` verarbeiten (bisher nur gezählt und ignoriert)
-- [x] 3. LLRP: Gateways ohne Broker finden, Scope/Broker-Adresse setzen
-      - [ ] 3a. LLRP über IPv6 (E1.33 verlangt vom Manager IPv4 und IPv6)
-      - [ ] 3b. Simulator-Gateway als LLRP-Target; Realtest mit MasterPort
-- [ ] 4. PDU-Vererbung (Flags) in `pdu.py` unterstützen
-- [ ] 5. EPT-Clients sauber durchreichen oder ablehnen
-- [ ] 6. Mehrere Broker im selben Scope per mDNS erkennen und warnen
+- [x] 1. Broker as RDM responder: answer requests to the broker's own UID
+      (`COMPONENT_SCOPE`, `SEARCH_DOMAIN`, `BROKER_STATUS`, base PIDs per E1.20)
+- [x] 2. Handle `CLIENT_ENTRY_UPDATE` (previously only counted and ignored)
+- [x] 3. LLRP: find gateways without a broker, set scope/broker address
+      - [ ] 3a. LLRP over IPv6 (E1.33 requires IPv4 and IPv6 for the manager)
+      - [ ] 3b. Simulator gateway as LLRP target; real-world test with the MasterPort
+- [ ] 4. Support PDU inheritance (flags) in `pdu.py`
+- [ ] 5. Pass EPT clients through properly or reject them
+- [ ] 6. Detect multiple brokers in the same scope via mDNS and warn
 
-## Robustheit im Realbetrieb
+## Robustness in real-world use
 
-- [ ] 7. Controller verbindet sich nach Broker-/Gateway-Neustart selbst wieder
-- [ ] 8. Mehrere Gateways gleichzeitig testen (zweites Gerät neben dem MasterPort)
-- [ ] 9. Weitere Gateways/Geräte testen, Kompatibilitätsliste im README
+- [ ] 7. Controller reconnects by itself after a broker/gateway restart
+- [ ] 8. Test several gateways at once (a second device next to the MasterPort)
+- [ ] 9. Test more gateways/devices, compatibility list in the README
 
-## Tests / Projektpflege
+## Tests / maintenance
 
-- [ ] 10. Testlaufzeit senken (derzeit ca. 100 s): feste Wartezeiten durch Ereignisse ersetzen
-- [x] 11. README: Platzhalter `<konto>` im Clone-Befehl ersetzen
-- [ ] 12. Release 0.5 mit Changelog, ggf. PyPI
+- [ ] 10. Reduce test run time (currently about 100 s): replace fixed waits with events
+- [x] 11. README: replace the `<konto>` placeholder in the clone command
+- [x] 12a. Translate the project to English (0.5.0)
+- [ ] 12. Release 0.5 with changelog, possibly PyPI
+
+## Afterwards
+
+- [ ] 13. Integrate pyrdmnet 0.5 into GelMatch (not using it yet) – only after the items above are done; guide: [docs/MIGRATING_TO_0.5.md](docs/MIGRATING_TO_0.5.md)
