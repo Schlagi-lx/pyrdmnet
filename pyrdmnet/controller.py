@@ -19,7 +19,9 @@ from dataclasses import dataclass
 
 from . import constants as C
 from . import pdu as P
-from .client import RptClient, RdmnetConnectionError
+from . import rdm_params as R
+from .client import RdmnetConnectionError, RptClient
+from .client_responder import ClientResponder
 from .rdm import RdmFormatError, RdmMessage, TransactionCounter, Uid
 
 log = logging.getLogger("pyrdmnet.controller")
@@ -117,6 +119,7 @@ class RdmnetController(RptClient):
         self.ack_overflow_max = 32
         self.write_enabled = False  # enable explicitly per session (on-site checklist)
         self.write_policy = write_policy or WritePolicy()
+        self.responder = ClientResponder(self)  # default responder (E1.33 7.4.8)
 
     # ----------------------------------------------------------------- Client list
     async def _after_connect(self) -> None:
@@ -158,6 +161,9 @@ class RdmnetController(RptClient):
     # ----------------------------------------------------------------- RPT receive
     async def _on_rpt(self, rpt: P.RptPdu) -> None:
         k = rpt.header
+        if k.vector == C.VECTOR_RPT_REQUEST:  # 7.4.9: requests to the controller's default responder
+            await self._answer_request(rpt)
+            return
         f = self._pending.get(k.sequence)
         if k.vector == C.VECTOR_RPT_STATUS:
             code, text = P.read_status(rpt.data)
@@ -173,6 +179,36 @@ class RdmnetController(RptClient):
             for n in messages:
                 self.unsolicited_messages.append((k.source, k.source_endpoint, n))
             del self.unsolicited_messages[:-200]
+
+    async def _answer_request(self, rpt: P.RptPdu) -> None:
+        k = rpt.header
+        try:
+            (raw,) = P.read_request_or_notification(rpt.data, C.VECTOR_REQUEST_RDM_CMD)
+            request = RdmMessage.decode(raw)
+        except (P.ProtocolError, RdmFormatError, ValueError):
+            await self._send_rpt_status(k, C.RPT_STATUS_INVALID_MESSAGE)
+            return
+        if k.dest_endpoint != C.E133_NULL_ENDPOINT:  # a controller has no other endpoints
+            await self._send_rpt_status(k, C.RPT_STATUS_UNKNOWN_ENDPOINT)
+            return
+        if request.dest.is_broadcast:
+            return  # E1.20: broadcasts are not answered
+        if request.dest != self.uid:
+            await self._send_rpt_status(k, C.RPT_STATUS_UNKNOWN_RDM_UID)
+            return
+        response = self.responder.respond(request)
+        if response is not None:
+            await self._send_rdm_response(k, raw, response)
+
+    # ----------------------------------------------------------------- TCP_COMMS_STATUS (E1.33 7.6.3)
+    async def read_tcp_comms_status(self, rpt_dest: Uid, timeout_s: float = 3.0) -> list[R.TcpCommsEntry]:
+        """Broker address and unhealthy TCP events per scope of a device or controller."""
+        return R.read_tcp_comms_entries(await self.rdm_get(rpt_dest, C.PID_TCP_COMMS_STATUS, timeout_s=timeout_s))
+
+    async def reset_tcp_comms_status(self, rpt_dest: Uid, scope: str | None = None, timeout_s: float = 3.0) -> None:
+        """Resets the unhealthy-event counter (SET; needs the write permission like any SET)."""
+        await self.rdm_set(rpt_dest, C.PID_TCP_COMMS_STATUS, R.build_scope_string(scope or self.scope),
+                           timeout_s=timeout_s)
 
     # ----------------------------------------------------------------- RDM GET
     def _next_sequence(self) -> int:

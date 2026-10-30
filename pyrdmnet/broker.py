@@ -456,8 +456,8 @@ class RdmnetBroker:
             if k.dest == self.config.uid:
                 await self._to_broker_responder(client, rpt)
                 return
-            dest = self._clients.get(k.dest)
-            if dest is None or dest.is_controller:
+            dest = self._clients.get(k.dest)  # 9.2.7: any RPT client, controllers have a default responder too
+            if dest is None:
                 self.counters["rpt_unknown_uid"] += 1
                 await self._status_to(client, k, C.RPT_STATUS_UNKNOWN_RPT_UID)
                 return

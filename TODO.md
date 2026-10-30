@@ -12,6 +12,11 @@
 - [x] 5. EPT in the broker: EPT clients, client list, forwarding (incl. inheritance), Unknown CID/Vector status
 - [x] 6. One broker per scope (9.1.4): STANDBY at start-up while another broker holds the scope, monitoring,
       `brokers` command
+- [x] 14. `TCP_COMMS_STATUS` (7.6.3, required for controllers and devices): unhealthy-TCP-event counter per scope,
+      GET/SET in the controller (as RDM responder) and the simulator device; controller helper to read it
+- [ ] 15. IPv6 for broker connections: broker listens on IPv6, clients connect via IPv6, Client Redirect IPv6
+      (6.3.1.6), static IPv6 broker configuration
+- [ ] 16. Fair queuing in the broker (9.2.10): each of N controllers gets at least 1/N of the bandwidth to a device
 
 ## Robustness in real-world use
 

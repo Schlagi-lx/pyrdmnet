@@ -5,7 +5,7 @@ as destination and the NULL endpoint. The broker answers like an RDMnet
 device with an RPT Notification (request + response).
 
 Supported (GET only, except IDENTIFY_DEVICE):
-* E1.20: SUPPORTED_PARAMETERS, DEVICE_INFO, MANUFACTURER_LABEL,
+* E1.20: SUPPORTED_PARAMETERS, PARAMETER_DESCRIPTION, DEVICE_INFO, MANUFACTURER_LABEL,
   DEVICE_MODEL_DESCRIPTION, SOFTWARE_VERSION_LABEL, DEVICE_LABEL,
   IDENTIFY_DEVICE (GET/SET, no physical effect)
 * E1.33: COMPONENT_SCOPE, SEARCH_DOMAIN, BROKER_STATUS
@@ -28,11 +28,12 @@ from . import constants as C
 from . import rdm_params as R
 from .rdm import RdmMessage, Uid
 
-# E1.20 product category "Data Distribution"
-PRODUCT_CATEGORY_DATA_DISTRIBUTION = 0x0700
+# E1.20 table A-5: PRODUCT_CATEGORY_DATA_DISTRIBUTION
+PRODUCT_CATEGORY_DATA_DISTRIBUTION = 0x0801
 
 SUPPORTED_PIDS = (
     C.PID_SUPPORTED_PARAMETERS,
+    C.PID_PARAMETER_DESCRIPTION,
     C.PID_DEVICE_INFO,
     C.PID_MANUFACTURER_LABEL,
     C.PID_DEVICE_MODEL_DESCRIPTION,
@@ -108,11 +109,10 @@ class BrokerResponder:
     def _get(self, pid: int, d: bytes) -> bytes | int:
         dd = self.data
         if pid == C.PID_SUPPORTED_PARAMETERS:
-            # E1.20: the mandatory PIDs (SUPPORTED_PARAMETERS, DEVICE_INFO, SOFTWARE_VERSION_LABEL,
-            # IDENTIFY_DEVICE) are not listed
-            required_pids = {C.PID_SUPPORTED_PARAMETERS, C.PID_DEVICE_INFO, C.PID_SOFTWARE_VERSION_LABEL,
-                       C.PID_IDENTIFY_DEVICE}
-            return b"".join(struct.pack(">H", p) for p in SUPPORTED_PIDS if p not in required_pids)
+            # E1.33 7.2.1: unlike E1.20, the default responder lists all PIDs, including the required ones
+            return b"".join(struct.pack(">H", p) for p in SUPPORTED_PIDS)
+        if pid == C.PID_PARAMETER_DESCRIPTION:  # only for manufacturer-specific PIDs - there are none
+            return C.NR_DATA_OUT_OF_RANGE
         if pid == C.PID_DEVICE_INFO:
             return R.build_device_info(R.DeviceInfo(0x0100, dd.model_id, PRODUCT_CATEGORY_DATA_DISTRIBUTION,
                                                    _version_as_number(__version__), 0, 0, 0, 0xFFFF, 0, 0))

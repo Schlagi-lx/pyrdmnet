@@ -20,9 +20,11 @@ class TcpConnection:
         self.last_sent = time.monotonic()
         self.closed = False
         self.capture = None  # optional: function(direction "in" or "out", raw data)
+        self.peer_address: tuple[str, int] | None = None  # (host, port) of the other side
         try:
             peer = writer.get_extra_info("peername")
             self.peer = f"{peer[0]}:{peer[1]}" if peer else "?"
+            self.peer_address = (peer[0], peer[1]) if peer else None
         except Exception:  # pragma: no cover - platform-dependent
             self.peer = "?"
 
