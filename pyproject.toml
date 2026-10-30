@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyrdmnet"
-version = "0.4.1"
+version = "0.5.0"
 description = "RDMnet (ANSI E1.33) broker and controller in pure Python"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -27,7 +27,7 @@ zeroconf = ["zeroconf"]
 pyrdmnet = "pyrdmnet.__main__:main"
 
 [project.urls]
-Homepage = "https://github.com/Schlagi-Lx/pyrdmnet"
+Homepage = "https://github.com/Schlagi-lx/pyrdmnet"
 
 [tool.setuptools]
 packages = ["pyrdmnet"]

@@ -1,0 +1,40 @@
+# Changelog
+
+## 0.5.0
+
+**Breaking change: the whole project is now in English.** Code that uses pyrdmnet 0.4 has to be adapted; there
+are no German aliases.
+
+### Renamed
+
+- Modules: `konstanten` → `constants`, `rdm_parameter` → `rdm_params`, `verbindung` → `connection`,
+  `klient` → `client`, `auslesen` → `readout`, `abgleich` → `settings_check`, `speicher` → `storage`,
+  `fassade` → `facade`, `livetest` → `live_test`, `schreibtest` → `write_test`
+- Classes, functions, attributes and constants, e.g. `RdmModul` → `RdmModule`, `RdmKonfig` → `RdmConfig`,
+  `EinstellungsErwartung` → `ExpectedSetting`, `RdmNachricht` → `RdmMessage`, `RptKlient` → `RptClient`,
+  `BrokerKonfig` → `BrokerConfig`, `geraete_finden()` → `find_devices()`, `geraet_auslesen()` → `read_device()`,
+  `einstellung_pruefen()` → `check_setting()`, `einstellung_anwenden()` → `apply_setting()`,
+  `schreibfreigabe_setzen()` → `set_write_enabled()`, `messung_begleiten()` → `accompany_measurement()`,
+  `starten()`/`stoppen()` → `start()`/`stop()`
+- Settings check status values: `OK_UNBESTAETIGT` → `OK_UNCONFIRMED`, `ABWEICHUNG` → `DEVIATION`,
+  `NICHT_PRUEFBAR` → `NOT_CHECKABLE`
+- CLI: `auslesen` → `read`, `schreibtest` → `writetest`; options e.g. `--ohne-mdns` → `--no-mdns`,
+  `--warten` → `--wait`, `--suche` → `--search`, `--ordner` → `--folder`, `--ziel-modus` → `--target-mode`,
+  `--ziel-adresse` → `--target-address`, `--zurueck-modus` → `--return-mode`, `--zurueck-adresse` → `--return-address`,
+  `--nativ` → `--native`, `--weiter` → `--keep`, `llrp --alle`/`--ja` → `--all`/`--yes`, `-v/--ausfuehrlich` → `--verbose`
+- Confirmation prompts accept `y`/`yes` (previously `j`/`ja`)
+- JSON exports, reports and event logs use English keys and event names (e.g. `client_verbunden` → `client_connected`)
+
+### Database
+
+- Schema version 2 with English table and column names (`rdm_geraet` → `rdm_device`, `rdm_schnappschuss` →
+  `rdm_snapshot`, `rdm_sensorwert` → `rdm_sensor_value`, `rdm_abgleich` → `rdm_check`, `rdm_aenderung` →
+  `rdm_change`, `rdm_personality_zuordnung` → `rdm_personality_mapping`).
+- Databases written by 0.4 (schema 1) are migrated automatically when opened with `RdmStore`. Phase and status
+  values are translated; JSON columns of migrated rows are copied unchanged and keep their German keys.
+
+## 0.4.1 and earlier
+
+- Broker RDM responder (E1.33 6.2), Client Entry Update (6.3.1.4), LLRP manager and target (section 5) – merged
+  in pull request #1 before the translation
+- First public version: broker, controller, readout, settings check, restricted SET, Art-Net RDM, simulator

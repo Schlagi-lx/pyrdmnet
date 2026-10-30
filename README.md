@@ -1,131 +1,149 @@
 # pyrdmnet
 
-**Eigener RDMnet-Broker (ANSI E1.33) und Controller in reinem Python – ohne externe Abhängigkeiten.**
+**A self-contained RDMnet (ANSI E1.33) broker and controller in pure Python – no external dependencies.**
 
-*English: A self-contained RDMnet (ANSI E1.33) broker and controller written in pure Python (standard library only). It discovers RDM devices behind RDMnet gateways, reads device info, personalities and sensors, and can set DMX personality / start address under strict safeguards. Documentation is in German.*
+pyrdmnet discovers RDM devices behind RDMnet gateways, reads device info, personalities and sensors, and can set
+DMX personality and start address under strict safeguards. It runs standalone and can be embedded in other programs
+through a synchronous interface.
+
+> **Upgrading from 0.4?** Version 0.5 is a breaking change: all names (modules, classes, functions, CLI commands and
+> options, database tables and JSON keys) are now English. See [CHANGELOG.md](CHANGELOG.md). Existing SQLite
+> databases are migrated automatically when opened.
 
 ## Status
 
 | | |
 |---|---|
-| Softwaretests | 130/130 bestanden (Python 3.10–3.13, nur Standardbibliothek) |
-| Realtest | mit **LSS MasterPort 2** (Firmware 2.13) als RDMnet-Gateway und einem **ETC ColorSource PAR**: Broker-Suche per mDNS, Verbindung, Geräte finden, auslesen, Modus/Startadresse setzen und zurücklesen |
-| Andere Gateways/Geräte | nicht getestet – Rückmeldungen willkommen |
+| Software tests | 133/133 passing (Python 3.10–3.13, standard library only) |
+| Real-world test | with an **LSS MasterPort 2** (firmware 2.13) as RDMnet gateway and an **ETC ColorSource PAR**: broker discovery via mDNS, connection, finding devices, reading, setting mode/start address and reading back (tested with 0.4) |
+| Other gateways/devices | not tested – feedback welcome |
 
-Kein Konformitätstest nach E1.33, keine Zertifizierung. Nutzung auf eigene Verantwortung (siehe Lizenz).
+No E1.33 conformance testing, no certification. Use at your own risk (see license).
 
-## Was das Modul kann
+## Features
 
-- **Broker** nach ANSI E1.33 (asyncio): Connect mit Scope-Prüfung, dynamische UIDs, Clientliste, RPT-Weiterleitung (auch Broadcast), Heartbeat, Paketmitschnitt als JSONL, Client Entry Update (Eintrag ändern ohne Neuverbindung)
-- **Broker-eigener RDM-Responder**: Controller können den Broker selbst abfragen (`COMPONENT_SCOPE`, `SEARCH_DOMAIN`, `BROKER_STATUS`, Gerätedaten). Scope und Zustand sind per RDM nicht änderbar.
-- **mDNS-Anmeldung** `_rdmnet._tcp` mit Scope-Subtyp – über Bonjour (`dns-sd`, auf macOS vorhanden), sonst optional über das Paket `zeroconf`
-- **Controller**: RDM GET, ACK_TIMER, ACK_OVERFLOW, NACK, Status-Meldungen
-- **Auslesen** über Gateway-Endpoints oder native RDMnet-Geräte: Hersteller, Modell, Firmware, DMX-Personalities mit Footprint, Startadresse, Sensoren, Betriebsstunden
-- **Abgleich** der Geräteeinstellung mit einer Soll-Einstellung (Modus, Footprint, Startadresse, Universum)
-- **Eingeschränktes RDM SET** (siehe unten)
-- **Sensor-Schnappschüsse** vor/nach einer Aktion, gespeichert in SQLite (Tabellen `rdm_*`)
-- **RDM über Art-Net** (ArtTod, ArtRdm)
-- **LLRP** (E1.33 Abschnitt 5): RDMnet-Komponenten ohne Broker finden, Scope, statische Broker-Adresse und Suchdomäne lesen und – mit Bestätigung – setzen. Der Broker kann selbst als LLRP-Target antworten (`--llrp`). Nur IPv4.
-- **Simulator** für Tests ohne Hardware
+- **Broker** per ANSI E1.33 (asyncio): connect with scope check, dynamic UIDs, client list, RPT forwarding
+  (including broadcast), heartbeat, packet capture as JSONL, Client Entry Update (change an entry without reconnecting)
+- **Broker RDM responder**: controllers can query the broker itself (`COMPONENT_SCOPE`, `SEARCH_DOMAIN`,
+  `BROKER_STATUS`, device info). Scope and state cannot be changed via RDM.
+- **mDNS registration** `_rdmnet._tcp` with scope subtype – via Bonjour (`dns-sd`, available on macOS), otherwise
+  optionally via the `zeroconf` package
+- **Controller**: RDM GET, ACK_TIMER, ACK_OVERFLOW, NACK, status messages
+- **Reading** via gateway endpoints or native RDMnet devices: manufacturer, model, firmware, DMX personalities with
+  footprint, start address, sensors, device hours
+- **Settings check** of the device setting against an expected setting (mode, footprint, start address, universe)
+- **Restricted RDM SET** (see below)
+- **Sensor snapshots** before/after an action, stored in SQLite (tables `rdm_*`)
+- **RDM over Art-Net** (ArtTod, ArtRdm)
+- **LLRP** (E1.33 section 5): find RDMnet components without a broker, read and – after confirmation – set scope,
+  static broker address and search domain. The broker can respond as an LLRP target itself (`--llrp`). IPv4 only.
+- **Simulator** for tests without hardware
 
-## Sicherheit beim Schreiben
+## Write safety
 
-Das Modul liest standardmäßig nur. Schreiben ist bewusst eng begrenzt:
+The module only reads by default. Writing is deliberately narrow:
 
-- nur `DMX_PERSONALITY`, `DMX_START_ADDRESS` und `IDENTIFY_DEVICE`
-- nur nach ausdrücklicher Schreibfreigabe je Sitzung
-- jede Änderung wird zurückgelesen und mit alt → neu protokolliert
-- Discovery-Befehle (`DISC_*`) sendet das Modul nie; die Discovery macht das Gateway
+- only `DMX_PERSONALITY`, `DMX_START_ADDRESS` and `IDENTIFY_DEVICE` (over LLRP: `COMPONENT_SCOPE`, `SEARCH_DOMAIN`,
+  `IDENTIFY_DEVICE`)
+- only after explicit write permission per session
+- every change is read back and logged as old → new
+- the module never sends discovery commands (`DISC_*`); discovery is done by the gateway
 
-## Schnellstart
+## Quick start
 
-Voraussetzung: Python ab 3.10. Keine Installation weiterer Pakete nötig.
+Requires Python 3.10 or later. No further packages needed.
 
 ```bash
 git clone https://github.com/Schlagi-lx/pyrdmnet.git
 cd pyrdmnet
-python3 -m unittest discover -s tests -t tests   # Tests
-python3 -m pyrdmnet demo                        # Offline-Durchlauf mit Simulator
+python3 -m unittest discover -s tests -t tests   # tests
+python3 -m pyrdmnet demo                        # offline run with the simulator
 ```
 
-Oder als Paket installieren: `pip install .` (optional mit mDNS über zeroconf: `pip install ".[zeroconf]"`).
+Or install as a package: `pip install .` (optionally with mDNS via zeroconf: `pip install ".[zeroconf]"`).
 
-### Befehle
+### Commands
 
-| Befehl | Zweck |
+| Command | Purpose |
 |---|---|
-| `broker` | Broker starten (läuft bis Strg+C) |
-| `simulator` | simuliertes RDMnet-Gerät mit einem Broker verbinden |
-| `auslesen` | alle Geräte am Broker finden und auslesen (nur lesen) |
-| `livetest` | Test mit realem Gateway, nur lesend |
-| `schreibtest` | Modus/Startadresse am realen Gerät setzen, prüfen und zurückstellen (mit Bestätigung vor Ort) |
-| `llrp` | Komponenten per LLRP finden (ohne Broker); mit `--uid` und `--scope`/`--broker`/`--domain` setzen |
-| `demo` | kompletter Offline-Durchlauf (Simulation) |
+| `broker` | start the broker (runs until Ctrl+C) |
+| `simulator` | connect a simulated RDMnet device to a broker |
+| `read` | find and read all devices on the broker (read only) |
+| `livetest` | test with a real gateway, read only |
+| `writetest` | set mode/start address on a real device, verify and restore (with on-site confirmation) |
+| `llrp` | find components via LLRP (no broker needed); set with `--uid` and `--scope`/`--broker`/`--domain` |
+| `demo` | complete offline run (simulation) |
 
-Beispiel mit getrennten Prozessen:
+Example with separate processes:
 
 ```bash
-python3 -m pyrdmnet broker --host 127.0.0.1 --port 8888 --log ereignisse.jsonl
+python3 -m pyrdmnet broker --host 127.0.0.1 --port 8888 --log events.jsonl
 python3 -m pyrdmnet simulator --broker 127.0.0.1:8888
-python3 -m pyrdmnet auslesen --broker 127.0.0.1:8888 --json geraete.json
+python3 -m pyrdmnet read --broker 127.0.0.1:8888 --json devices.json
 ```
 
-Gateway mit falschem Scope oder ohne Broker-Suche? Per LLRP finden und umstellen:
+Gateway with the wrong scope or without broker discovery? Find and reconfigure it via LLRP:
 
 ```bash
-python3 -m pyrdmnet llrp --adapter 192.168.1.10                       # suchen, Scope anzeigen
+python3 -m pyrdmnet llrp --adapter 192.168.1.10                       # search, show scope
 python3 -m pyrdmnet llrp --adapter 192.168.1.10 --uid 7ff0:00000100 \
-        --scope default --broker 192.168.1.10:8888                    # Scope + statischen Broker setzen
+        --scope default --broker 192.168.1.10:8888                    # set scope + static broker
 ```
 
-Im echten Netz `--host` auf die IP des Netzwerkadapters setzen und mit `--dnssd` per mDNS anmelden. Am Gateway die Broker-Suche auf mDNS stellen und denselben Scope eintragen (Standard: `default`, Groß-/Kleinschreibung beachten). Konkurrierende Broker im selben Scope vermeiden.
+On a real network, set `--host` to the IP of the network adapter and register via mDNS with `--dnssd`. On the
+gateway, set broker discovery to mDNS and enter the same scope (default: `default`, case-sensitive). Avoid competing
+brokers in the same scope.
 
-## Einbinden in eigene Programme
+## Embedding in your own programs
 
 ```python
-from pyrdmnet.fassade import RdmModul, RdmKonfig
-from pyrdmnet.abgleich import EinstellungsErwartung
+from pyrdmnet.facade import RdmModule, RdmConfig
+from pyrdmnet.settings_check import ExpectedSetting
 
-modul = RdmModul(RdmKonfig(broker_host=adapter_ip, db="rdm.sqlite"))
-modul.starten()
-profil = modul.geraet_auslesen(modul.geraete_finden()[0])
-erwartung = EinstellungsErwartung(modus_name, footprint, startadresse, universe)
-abgleich = modul.einstellung_pruefen(profil, erwartung, bezug="sitzung-1")
-if not abgleich.messung_erlaubt:
-    modul.schreibfreigabe_setzen(True)          # nur nach Bestätigung vor Ort
-    anwendung, profil, abgleich = modul.einstellung_anwenden(profil, erwartung, bezug="sitzung-1")
-with modul.messung_begleiten(profil, messung_ref="1"):
-    ...  # eigene Aktion; Sensoren werden davor und danach gespeichert
-modul.stoppen()
+module = RdmModule(RdmConfig(broker_host=adapter_ip, db="rdm.sqlite"))
+module.start()
+profile = module.read_device(module.find_devices()[0])
+expected = ExpectedSetting(gdtf_mode, footprint, start_address, universe)
+check = module.check_setting(profile, expected, reference="session-1")
+if not check.measurement_allowed:
+    module.set_write_enabled(True)          # only after on-site confirmation
+    application, profile, check = module.apply_setting(profile, expected, reference="session-1")
+with module.accompany_measurement(profile, measurement_ref="1"):
+    ...  # your own action; sensors are stored before and after
+module.stop()
 ```
 
-Ein Moduswechsel braucht eine bestätigte Zuordnung RDM-Personality ↔ Modus (je Modell und Firmware); geraten wird nie.
+A mode change requires a confirmed mapping RDM personality ↔ mode (per model and firmware); nothing is guessed.
 
-## Aufbau
+## Structure
 
-| Datei | Inhalt |
+| File | Content |
 |---|---|
-| `konstanten.py` | Protokollkonstanten E1.20, E1.33, E1.37-7 |
-| `rdm.py`, `rdm_parameter.py` | RDM-Nachrichten, UID, Prüfsumme, Parameterdaten |
-| `pdu.py`, `verbindung.py` | ACN-TCP-Präambel, Root/Broker/RPT-PDUs, TCP-Verbindung |
-| `broker.py`, `broker_responder.py` | Broker, RDM-Responder des Brokers |
-| `klient.py`, `controller.py` | RPT-Client, Controller |
-| `auslesen.py`, `abgleich.py` | Geräte auslesen, Soll-Abgleich, Anwenden mit Rücklesen |
-| `speicher.py` | SQLite-Tabellen `rdm_*` |
-| `fassade.py` | synchrone Schnittstelle (asyncio im eigenen Thread) |
-| `dnssd.py` | mDNS-Anmeldung |
-| `artnet_rdm.py` | RDM über Art-Net |
-| `llrp.py` | LLRP-Manager und -Target |
-| `simulator.py`, `livetest.py`, `schreibtest.py`, `__main__.py` | Simulator, Werkzeuge, Kommandozeile |
+| `constants.py` | protocol constants E1.20, E1.33, E1.37-7 |
+| `rdm.py`, `rdm_params.py` | RDM messages, UID, checksum, parameter data |
+| `pdu.py`, `connection.py` | ACN TCP preamble, root/broker/RPT PDUs, TCP connection |
+| `broker.py`, `broker_responder.py` | broker, the broker's RDM responder |
+| `client.py`, `controller.py` | RPT client, controller |
+| `readout.py`, `settings_check.py` | reading devices, settings check, applying with read-back |
+| `storage.py` | SQLite tables `rdm_*`, migration of 0.4 databases |
+| `facade.py` | synchronous interface (asyncio in its own thread) |
+| `dnssd.py` | mDNS registration |
+| `artnet_rdm.py` | RDM over Art-Net |
+| `llrp.py` | LLRP manager and target |
+| `simulator.py`, `live_test.py`, `write_test.py`, `__main__.py` | simulator, tools, command line |
 
-## Hinweise
+## Notes
 
-- Die Protokollkonstanten wurden mit den öffentlichen Referenzimplementierungen von ETC ([ETCLabs/RDMnet](https://github.com/ETCLabs/RDMnet), [ETCLabs/RDM](https://github.com/ETCLabs/RDM)) abgeglichen; Code daraus wurde nicht übernommen.
-- Der Broker meldet sich standardmäßig mit der ESTA-Prototyp-Herstellerkennung `0x7FF0` an (für Entwicklung vorgesehen). Wer das Modul in einem Produkt einsetzt, trägt in `RdmKonfig.broker_uid` seine eigene ESTA-Herstellerkennung ein.
-- Die Normen ANSI E1.20 und E1.33 gibt es bei ESTA (tsp.esta.org).
-- `COMPONENT_SCOPE`: E1.33-2019 nennt als Datenlänge 0x54, die Felder ergeben aber 88 Byte (0x58). pyrdmnet sendet und erwartet 88 Byte, wie die ETC-Referenzimplementierung.
-- „RDMnet“ bezeichnet den ESTA-Standard ANSI E1.33. Dieses Projekt steht in keiner Verbindung zu ESTA, ETC oder LSS.
+- The protocol constants were checked against ETC's public reference implementations
+  ([ETCLabs/RDMnet](https://github.com/ETCLabs/RDMnet), [ETCLabs/RDM](https://github.com/ETCLabs/RDM)); no code was
+  taken from them.
+- By default the broker uses the ESTA prototype manufacturer ID `0x7FF0` (intended for development). If you use the
+  module in a product, set your own ESTA manufacturer ID in `RdmConfig.broker_uid`.
+- The ANSI E1.20 and E1.33 standards are available from ESTA (tsp.esta.org).
+- `COMPONENT_SCOPE`: E1.33-2019 states a data length of 0x54, but the fields add up to 88 bytes (0x58). pyrdmnet sends
+  and expects 88 bytes, like ETC's reference implementation.
+- "RDMnet" refers to the ESTA standard ANSI E1.33. This project is not affiliated with ESTA, ETC or LSS.
 
-## Lizenz
+## License
 
-MIT – siehe [LICENSE](LICENSE).
+MIT – see [LICENSE](LICENSE).
