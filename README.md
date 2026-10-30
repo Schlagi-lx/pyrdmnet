@@ -15,7 +15,7 @@ through a synchronous interface.
 
 | | |
 |---|---|
-| Software tests | 206/206 passing on Linux, macOS and Windows (Python 3.10–3.13, standard library only) |
+| Software tests | 216/216 passing on Linux, macOS and Windows (Python 3.10–3.13, standard library only) |
 | Real-world test | with an **LSS MasterPort 2** (firmware 2.13) as RDMnet gateway and an **ETC ColorSource PAR**: broker discovery via mDNS, connection, finding devices, reading, setting mode/start address and reading back (tested with 0.4) |
 | Other gateways/devices | not tested – feedback welcome |
 
@@ -40,7 +40,10 @@ No E1.33 conformance testing, no certification. Use at your own risk (see licens
   own UID (required E1.20 PIDs, `COMPONENT_SCOPE`, `SEARCH_DOMAIN`, `TCP_COMMS_STATUS`); a SET of `COMPONENT_SCOPE`
   moves a client to the new scope (and static broker). Unhealthy TCP connections are counted per scope.
 - **Automatic reconnection** (E1.33 6.2.5) for controllers, devices and EPT clients: after a broker restart or a
-  lost connection they reconnect by themselves with the back-off of the standard; Client Redirect (IPv4) is followed.
+  lost connection they reconnect by themselves with the back-off of the standard; Client Redirect (IPv4 and IPv6) is
+  followed, and the broker can redirect a client itself (`redirect_client`).
+- **IPv6**: the broker listens on IPv4 and/or IPv6 (`BrokerConfig.extra_hosts`, CLI `broker --ipv6 ::`), clients
+  connect to either (`--broker [fd00::5]:8888`); static IPv6 broker addresses in `COMPONENT_SCOPE`.
   The facade waits for the reconnection instead of failing.
 - **Reading** via gateway endpoints or native RDMnet devices: manufacturer, model, firmware, DMX personalities with
   footprint, start address, sensors, device hours

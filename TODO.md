@@ -14,7 +14,7 @@
       `brokers` command
 - [x] 14. `TCP_COMMS_STATUS` (7.6.3, required for controllers and devices): unhealthy-TCP-event counter per scope,
       GET/SET in the controller (as RDM responder) and the simulator device; controller helper to read it
-- [ ] 15. IPv6 for broker connections: broker listens on IPv6, clients connect via IPv6, Client Redirect IPv6
+- [x] 15. IPv6 for broker connections: broker listens on IPv6, clients connect via IPv6, Client Redirect IPv6
       (6.3.1.6), static IPv6 broker configuration
 - [ ] 16. Fair queuing in the broker (9.2.10): each of N controllers gets at least 1/N of the bandwidth to a device
 

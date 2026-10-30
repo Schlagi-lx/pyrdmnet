@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- IPv6 for broker connections: `BrokerConfig.host` may be an IPv6 address, `BrokerConfig.extra_hosts` adds further
+  listen addresses on the same port (e.g. `("::",)` next to an IPv4 host; CLI `broker --ipv6 ::`,
+  `RdmConfig.broker_extra_hosts`); `RdmnetBroker.addresses`. Clients connect over IPv4 or IPv6.
+- Client Redirect IPv6 (E1.33 6.3.1.6) is followed during connect and while connected, like IPv4.
+  `RdmnetBroker.redirect_client(uid, host, port)` sends a redirect (IPv6 only over IPv6 connections).
+  `build_redirect_v6` / `read_redirect_v6`, `format_address` in `pdu`.
+- IPv6 addresses appear as `[addr]:port` in logs, events and the broker status. mDNS registration via `zeroconf`
+  accepts an IPv6 address.
 - `TCP_COMMS_STATUS` (E1.33 7.6.3): RPT clients count unhealthy TCP connections (heartbeat timeout) per scope and
   report scope, broker address and count; SET resets the count (NACK `UNKNOWN_SCOPE` for another scope).
   `RdmnetController.read_tcp_comms_status()` / `reset_tcp_comms_status()`; `TcpCommsEntry` in `rdm_params`.

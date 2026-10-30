@@ -50,6 +50,7 @@ class RdmConfig:
     internal_broker: bool = True  # start our own broker in this process
     broker_host: str = "127.0.0.1"  # IP of the selected network adapter
     broker_port: int = 8888  # 0 = choose freely (only useful with the internal broker)
+    broker_extra_hosts: tuple[str, ...] = ()  # internal broker: further addresses, e.g. ("::",) for IPv6
     scope: str = C.E133_DEFAULT_SCOPE
     broker_uid: Uid = field(default_factory=lambda: Uid(C.ESTA_PROTOTYPE_MANUFACTURER, 0x00000001))
     controller_uid: Uid | None = None  # None = request a dynamic UID
@@ -119,7 +120,8 @@ class RdmModule:
         port = k.broker_port
         if k.internal_broker:
             self.broker = RdmnetBroker(BrokerConfig(
-                host=k.broker_host, port=k.broker_port, scope=k.scope, uid=k.broker_uid,
+                host=k.broker_host, port=k.broker_port, extra_hosts=k.broker_extra_hosts, scope=k.scope,
+                uid=k.broker_uid,
                 heartbeat_interval_s=k.heartbeat_interval_s, heartbeat_timeout_s=k.heartbeat_timeout_s,
                 event_file=k.event_file))
             await self.broker.start()
@@ -136,7 +138,8 @@ class RdmModule:
         self.controller = RdmnetController(uid=k.controller_uid, scope=k.scope, write_policy=k.write_policy,
                                            heartbeat_interval_s=k.heartbeat_interval_s,
                                            heartbeat_timeout_s=k.heartbeat_timeout_s)
-        await self.controller.connect(k.broker_host if k.broker_host != "0.0.0.0" else "127.0.0.1", self.port,
+        host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(k.broker_host, k.broker_host)  # all adapters: loopback
+        await self.controller.connect(host, self.port,
                                       timeout_s=k.timeout_s, auto_reconnect=True)
         await self.controller.client_list(timeout_s=k.timeout_s)
 

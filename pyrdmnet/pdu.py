@@ -9,6 +9,7 @@ otherwise the message is rejected.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import struct
 import uuid
 from dataclasses import dataclass, field
@@ -269,6 +270,33 @@ def read_redirect_v4(data: bytes) -> tuple[str, int]:
     if len(data) != 6:
         raise ProtocolError(f"Client Redirect IPv4 with {len(data)} bytes instead of 6")
     return ".".join(str(b) for b in data[:4]), struct.unpack(">H", data[4:6])[0]
+
+
+def build_redirect_v6(ip: str, port: int) -> bytes:
+    """Data of a Client Redirect IPv6 message (E1.33 6.3.1.6): IPv6 address + port."""
+    return ipaddress.IPv6Address(ip).packed + struct.pack(">H", port)
+
+
+def read_redirect_v6(data: bytes) -> tuple[str, int]:
+    if len(data) != 18:
+        raise ProtocolError(f"Client Redirect IPv6 with {len(data)} bytes instead of 18")
+    return str(ipaddress.IPv6Address(data[:16])), struct.unpack(">H", data[16:18])[0]
+
+
+def build_redirect(ip: str, port: int) -> tuple[int, bytes]:
+    """(vector, data) of the Client Redirect matching the address family."""
+    if ipaddress.ip_address(ip).version == 6:
+        return C.VECTOR_BROKER_REDIRECT_V6, build_redirect_v6(ip, port)
+    return C.VECTOR_BROKER_REDIRECT_V4, build_redirect_v4(ip, port)
+
+
+def read_redirect(vector: int, data: bytes) -> tuple[str, int]:
+    return read_redirect_v6(data) if vector == C.VECTOR_BROKER_REDIRECT_V6 else read_redirect_v4(data)
+
+
+def format_address(host: str, port: int) -> str:
+    """``host:port``; IPv6 in brackets (``[::1]:8888``)."""
+    return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
 
 
 @dataclass
