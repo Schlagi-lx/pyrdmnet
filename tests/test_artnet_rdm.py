@@ -1,4 +1,4 @@
-"""S11 (V0.21.12): RDM über Art-Net – Pakete, TOD, Auslesen, Sensoren, SET mit Schreibfreigabe. Nur 127.0.0.1."""
+"""S11 (V0.21.12): RDM over Art-Net - packets, TOD, readout, sensors, SET with write permission. 127.0.0.1 only."""
 import struct
 import unittest
 
@@ -19,7 +19,7 @@ class Packets(unittest.TestCase):
         self.assertEqual(list(p[24:27]), [0, 1, 17])
         self.assertEqual(len(p), 56)
         with self.assertRaises(AR.ArtnetFormatError):
-            AR.tod_request([0, 256])                        # verschiedene Nets in einem Paket
+            AR.tod_request([0, 256])                        # different Nets in one packet
 
     def test_art_rdm_without_start_code_and_back(self):
         a = RdmMessage(dest=Uid(0x1234, 5), source=Uid(0x7FF0, 1), transaction=7, port_or_response_type=1,
@@ -28,7 +28,7 @@ class Packets(unittest.TestCase):
         p = AR.art_rdm(0x0102, raw)
         self.assertEqual(struct.unpack('<H', p[8:10])[0], 0x8300)
         self.assertEqual((p[12], p[21], p[22], p[23]), (1, 0x01, 0, 0x02))
-        self.assertEqual(p[24:], raw[1:])                    # ohne 0xCC
+        self.assertEqual(p[24:], raw[1:])                    # without 0xCC
         op, f = AR.parse_packet(p)
         self.assertEqual((op, f['port_address'], f['rdm']), (0x8300, 0x0102, raw))
 
@@ -59,7 +59,7 @@ class WithNode(unittest.TestCase):
         p = self.m.read_device(next(a for a in dmx_addr if a.rdm_uid == self.s1.uid), save=False)
         self.assertEqual(p.device_info.start_address, 100)
         self.assertEqual(p.model, 'SIM-PAR RGBL')
-        self.assertEqual(p.universe, 1)                     # Port-Adresse 0 = Universum 1
+        self.assertEqual(p.universe, 1)                     # port address 0 = universe 1
         self.assertTrue(p.sensors)
         s = self.m.sensor_snapshot(p)
         self.assertFalse(s.error, s.error)
@@ -76,7 +76,7 @@ class WithNode(unittest.TestCase):
         p = self.m.read_device(next(a for a in dmx_addr if a.rdm_uid == self.s2.uid), save=False)
         e = ExpectedSetting(p.personality_current.description if p.personality_current else 'Direct 6ch',
                                   footprint=p.footprint, start_address=200, universe=None)
-        self.m.apply_setting(p, e)                   # ohne Schreibfreigabe: SET gesperrt (Fehler im Ergebnis)
+        self.m.apply_setting(p, e)                   # without write permission: SET blocked (error in result)
         self.assertEqual(self.s2.start_address, 1)
         self.assertEqual(self.s2.set_log, [])
         self.m.set_write_enabled(True)

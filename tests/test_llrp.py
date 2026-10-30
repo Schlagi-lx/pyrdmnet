@@ -1,4 +1,4 @@
-"""LLRP (E1.33 Abschnitt 5): Kodierung, Discovery, RDM über LLRP, Broker als Target."""
+"""LLRP (E1.33 section 5): encoding, discovery, RDM over LLRP, broker as target."""
 
 import asyncio
 import itertools
@@ -57,7 +57,7 @@ class TestEncoding(unittest.TestCase):
         p = read_llrp(raw)
         self.assertEqual((p.sender_cid, p.vector, p.dest_cid, p.transaction, p.data),
                          (cid, C.VECTOR_LLRP_PROBE_REPLY, target, 0xFFFFFFFF, b"\xf0\x00\x04\x01"))
-        # Längen nach Tabelle 5-1: Root ab Oktett 16, LLRP-PDU ab 39, Daten ab 66
+        # lengths per table 5-1: root from octet 16, LLRP PDU from 39, data from 66
         self.assertEqual(len(build_llrp(cid, 1, target, 1, b"")), 66)
         with self.assertRaises(P.ProtocolError):
             read_llrp(b"\x00" * 70)
@@ -161,28 +161,28 @@ class TestSingleTarget(LlrpTest):
                          (C.RESPONSE_NACK, C.NR_SUB_DEVICE_OUT_OF_RANGE))
 
 
-@unittest.skipUnless(MULTICAST, "Multicast auf 127.0.0.1 nicht verfügbar")
+@unittest.skipUnless(MULTICAST, "Multicast on 127.0.0.1 not available")
 class TestMultipleTargets(LlrpTest):
     multicast = True
 
     async def test_discovery_and_filter(self):
         await self.add_target(Uid(0x7FF0, 1))
-        await self.add_target(Uid(0x7FF0, 2), connected=True)  # mit Broker verbunden
+        await self.add_target(Uid(0x7FF0, 2), connected=True)  # connected to a broker
         await self.add_target(Uid(0x7FF0, 3), type=C.LLRP_TYPE_BROKER, connected=True)
         default = {z.uid.device for z in await self.m.discover()}
-        self.assertEqual(default, {1, 3})  # Broker antworten immer
+        self.assertEqual(default, {1, 3})  # brokers always reply
         self.assertEqual({z.uid.device for z in await self.m.discover(filter=0)}, {1, 2, 3})
         self.assertEqual({z.uid.device for z in await self.m.discover(filter=C.LLRP_FILTER_BROKERS_ONLY)}, {3})
 
     async def test_same_uid_different_cid(self):
-        dyn = Uid(0x8000 | 0x7FF0, 0)  # zwei Targets ohne zugewiesene dynamische UID
+        dyn = Uid(0x8000 | 0x7FF0, 0)  # two targets without an assigned dynamic UID
         a, _ = await self.add_target(dyn)
         b, _ = await self.add_target(dyn)
         targets = await self.m.discover()
         self.assertEqual({z.cid for z in targets}, {a.cid, b.cid})
 
     async def test_range_split(self):
-        # je 3 Targets in unterer und oberer UID-Hälfte; bei Grenze 3 genügt eine Teilung
+        # 3 targets each in the lower and upper UID half; with a limit of 3, one split suffices
         for h in (0x0001, 0xFFF0):
             for i in range(3):
                 await self.add_target(Uid(h, 0x1000 + i))
