@@ -60,6 +60,7 @@ class RdmConfig:
     dnssd: bool = False  # register the broker via mDNS (requires zeroconf)
     heartbeat_interval_s: float = C.E133_HEARTBEAT_INTERVAL_S
     heartbeat_timeout_s: float = C.E133_HEARTBEAT_TIMEOUT_S
+    reconnect_wait_s: float = 10.0  # how long a call waits for the automatic reconnection to the broker
     # V0.21.12 (S11): RDM over Art-Net instead of RDMnet (no broker); target = node IP or broadcast
     transport: str = "RDMNET"  # "RDMNET" | "ARTNET"
     artnet_target_ip: str | None = None
@@ -133,7 +134,7 @@ class RdmModule:
                                            heartbeat_interval_s=k.heartbeat_interval_s,
                                            heartbeat_timeout_s=k.heartbeat_timeout_s)
         await self.controller.connect(k.broker_host if k.broker_host != "0.0.0.0" else "127.0.0.1", self.port,
-                                        timeout_s=k.timeout_s)
+                                      timeout_s=k.timeout_s, auto_reconnect=True)
         await self.controller.client_list(timeout_s=k.timeout_s)
 
     async def _connected(self) -> RdmnetController:
@@ -141,6 +142,10 @@ class RdmModule:
             if not self.controller.connected:
                 await self.controller.connect()
             return self.controller
+        if self.controller is not None and not self.controller.connected and self.controller.auto_reconnecting:
+            # E1.33 6.2.5: the controller reconnects by itself - wait instead of opening a second connection
+            await self.controller.wait_connected(self.config.reconnect_wait_s)
+            await self.controller.client_list(timeout_s=self.config.timeout_s)
         if self.controller is None or not self.controller.connected:
             permission = self.controller.write_enabled if self.controller else False
             await self._connect_controller()

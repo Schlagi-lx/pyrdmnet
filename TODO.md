@@ -15,7 +15,7 @@
 
 ## Robustness in real-world use
 
-- [ ] 7. Controller reconnects by itself after a broker/gateway restart
+- [x] 7. Automatic reconnection after a broker restart (6.2.5 back-off, Client Redirect IPv4), facade waits
 - [ ] 8. Test several gateways at once (a second device next to the MasterPort)
 - [ ] 9. Test more gateways/devices, compatibility list in the README
 

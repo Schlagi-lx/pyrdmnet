@@ -15,7 +15,7 @@ through a synchronous interface.
 
 | | |
 |---|---|
-| Software tests | 161/161 passing on Linux, macOS and Windows (Python 3.10–3.13, standard library only) |
+| Software tests | 172/172 passing on Linux, macOS and Windows (Python 3.10–3.13, standard library only) |
 | Real-world test | with an **LSS MasterPort 2** (firmware 2.13) as RDMnet gateway and an **ETC ColorSource PAR**: broker discovery via mDNS, connection, finding devices, reading, setting mode/start address and reading back (tested with 0.4) |
 | Other gateways/devices | not tested – feedback welcome |
 
@@ -35,6 +35,9 @@ No E1.33 conformance testing, no certification. Use at your own risk (see licens
   if there is one it stays in STANDBY (reported via `BROKER_STATUS`) until the other one is gone, and while running it
   warns when another broker appears. `brokers` lists all brokers of a scope.
 - **Controller**: RDM GET, ACK_TIMER, ACK_OVERFLOW, NACK, status messages
+- **Automatic reconnection** (E1.33 6.2.5) for controllers, devices and EPT clients: after a broker restart or a
+  lost connection they reconnect by themselves with the back-off of the standard; Client Redirect (IPv4) is followed.
+  The facade waits for the reconnection instead of failing.
 - **Reading** via gateway endpoints or native RDMnet devices: manufacturer, model, firmware, DMX personalities with
   footprint, start address, sensors, device hours
 - **Settings check** of the device setting against an expected setting (mode, footprint, start address, universe)

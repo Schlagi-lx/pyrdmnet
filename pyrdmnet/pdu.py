@@ -260,6 +260,17 @@ def read_connect_reply(data: bytes) -> ConnectReply:
     return ConnectReply(code, version, Uid.from_bytes(data[4:10]), Uid.from_bytes(data[10:16]))
 
 
+def build_redirect_v4(ip: str, port: int) -> bytes:
+    """Data of a Client Redirect IPv4 message (E1.33 6.3.1.5): IPv4 address + port."""
+    return bytes(int(part) for part in ip.split(".")) + struct.pack(">H", port)
+
+
+def read_redirect_v4(data: bytes) -> tuple[str, int]:
+    if len(data) != 6:
+        raise ProtocolError(f"Client Redirect IPv4 with {len(data)} bytes instead of 6")
+    return ".".join(str(b) for b in data[:4]), struct.unpack(">H", data[4:6])[0]
+
+
 @dataclass
 class DynUidRequest:
     uid: Uid  # manufacturer ID with MSB set, device ID 0
