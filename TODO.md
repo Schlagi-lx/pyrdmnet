@@ -7,7 +7,8 @@
 - [x] 2. Handle `CLIENT_ENTRY_UPDATE` (previously only counted and ignored)
 - [x] 3. LLRP: find gateways without a broker, set scope/broker address
       - [x] 3a. LLRP over IPv6 (E1.33 requires IPv4 and IPv6 for the manager)
-      - [ ] 3b. Simulator gateway as LLRP target; real-world test with the MasterPort
+      - [x] 3b. Simulator gateway as LLRP target (`simulator --llrp`, wrong scope fixed via LLRP)
+      - [ ] 3c. Real-world LLRP test with the MasterPort (hardware)
 - [x] 4. PDU inheritance – per E1.33 4.1.1 only allowed for EPT, done as part of 5
 - [x] 5. EPT in the broker: EPT clients, client list, forwarding (incl. inheritance), Unknown CID/Vector status
 - [x] 6. One broker per scope (9.1.4): STANDBY at start-up while another broker holds the scope, monitoring,

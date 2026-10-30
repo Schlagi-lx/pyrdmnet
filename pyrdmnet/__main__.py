@@ -64,11 +64,27 @@ async def _broker(args) -> None:
 async def _simulator(args) -> None:
     host, port = _host_port(args.broker)
     g = SimulatedGateway(scope=args.scope, native=args.native)
-    uid = await g.connect(host, port)
-    print(f"Simulator connected as {uid} ({'native' if args.native else 'gateway with fixture on port 1'}). "
-          "Ctrl+C to quit.")
-    await g.disconnected.wait()
-    print("Disconnected:", g.disconnect_reason)
+    kind = "native" if args.native else "gateway with fixture on port 1"
+    if not args.llrp:
+        uid = await g.connect(host, port)
+        print(f"Simulator connected as {uid} ({kind}). Ctrl+C to quit.")
+        await g.disconnected.wait()
+        print("Disconnected:", g.disconnect_reason)
+        return
+    from .llrp import LlrpNetwork
+    target = await g.start_llrp(LlrpNetwork(adapter=args.adapter, interface6=args.interface6))
+    print(f"Simulator {g.requested_uid} ({kind}) answers LLRP via {' + '.join(target.families)}, "
+          f"scope \"{g.scope}\". Ctrl+C to quit.")
+
+    def show(connected: bool, text: str) -> None:
+        print(f"{'Connected' if connected else 'Not connected'} (scope \"{g.scope}\"): {text}")
+    g.on_connection_change = show
+    try:
+        if await g.connect(host, port, keep_trying=True) is None:  # e.g. wrong scope: fix it via LLRP
+            print(f"Not connected to {P.format_address(host, port)}: {g.last_connect_error} - retrying")
+        await asyncio.Event().wait()
+    finally:
+        await g.disconnect()
 
 
 async def _read_devices(args) -> int:
@@ -307,6 +323,11 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--broker", default="127.0.0.1:8888")
     s.add_argument("--scope", default=C.E133_DEFAULT_SCOPE)
     s.add_argument("--native", action="store_true", help="without gateway (the fixture is the RDMnet device)")
+    s.add_argument("--llrp", action="store_true",
+                   help="also answer LLRP (find/configure the simulator with the llrp command) and keep trying to "
+                        "connect, e.g. with a wrong scope")
+    s.add_argument("--adapter", default="0.0.0.0", help="with --llrp: IPv4 address of the network adapter")
+    s.add_argument("--interface6", default="0", help="with --llrp: IPv6 interface name or index (0 = default)")
 
     a = sub.add_parser("read", help="find and read devices")
     a.add_argument("--broker", default="127.0.0.1:8888")

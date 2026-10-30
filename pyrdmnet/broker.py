@@ -454,7 +454,8 @@ class RdmnetBroker:
         elif bp.vector == C.VECTOR_BROKER_CLIENT_ENTRY_UPDATE:
             await self._update_client_entry(client, bp.data)
         elif bp.vector == C.VECTOR_BROKER_DISCONNECT:
-            self._event("client_disconnect", client=client.name)
+            code = int.from_bytes(bp.data[:2], "big") if len(bp.data) >= 2 else None
+            self._event("client_disconnect", client=client.name, reason=C.DISCONNECT_TEXT.get(code, code))
             await v.close()
         else:
             self.counters["broker_vector_ignored"] += 1

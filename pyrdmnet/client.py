@@ -88,6 +88,7 @@ class RptClient:
         self.static_broker: tuple[str, int] | None = None  # static broker address of the scope, if configured
         self.unhealthy_events: dict[str, int] = {}  # scope -> unhealthy TCP connections (16 bit, saturating)
         self._background: set[asyncio.Task] = set()  # tasks that outlive one connection (scope change)
+        self._wake = asyncio.Event()  # ends a back-off pause early (see _retry_now)
         self._supervisor: asyncio.Task | None = None
         self._is_connected = asyncio.Event()
         self._sleep = asyncio.sleep  # replaceable in tests (back-off timing)
@@ -96,18 +97,29 @@ class RptClient:
     def connected(self) -> bool:
         return self._v is not None and not self._v.closed
 
-    async def connect(self, host: str, port: int, timeout_s: float = 5.0, auto_reconnect: bool = False) -> Uid:
+    async def connect(self, host: str, port: int, timeout_s: float = 5.0, auto_reconnect: bool = False,
+                      keep_trying: bool = False) -> Uid | None:
         """Connect to the broker. Raises RdmnetConnectionError if the first connect fails.
 
         With ``auto_reconnect`` the client reconnects by itself after a lost connection
-        (E1.33 6.2.5) until :meth:`disconnect` is called.
+        (E1.33 6.2.5) until :meth:`disconnect` is called. With ``keep_trying`` (implies
+        ``auto_reconnect``) a failed first connect does not raise either: the client keeps
+        trying with the same back-off and returns None - e.g. a device with the wrong scope
+        that waits to be reconfigured via LLRP.
         """
         if self._supervisor is not None and not self._supervisor.done():
             raise RdmnetConnectionError("Automatic reconnection is already running")
         self._closing = False
         self.target, self._connect_timeout_s = (host, port), timeout_s
-        uid = await self._connect_following_redirects()
-        if auto_reconnect:
+        try:
+            uid = await self._connect_following_redirects()
+        except RdmnetConnectionError as error:
+            if not keep_trying:
+                raise
+            self.last_connect_error = str(error)
+            self.disconnected.set()
+            uid = None
+        if auto_reconnect or keep_trying:
             self._supervisor = asyncio.create_task(self._supervise())
         return uid
 
@@ -150,8 +162,8 @@ class RptClient:
             try:
                 while not self._closing:
                     attempt += 1
-                    if attempt > 2:  # the first two attempts are immediate
-                        await self._sleep(max(backoff, self.reconnect_min_s))
+                    if attempt > 2 and await self._pause(max(backoff, self.reconnect_min_s)):
+                        backoff = 0.0  # woken early: the configuration changed (e.g. scope set via LLRP)
                     target = self.target
                     try:
                         await self._connect_following_redirects()
@@ -167,6 +179,24 @@ class RptClient:
                     break
             finally:
                 self.reconnecting = False
+
+    async def _pause(self, seconds: float) -> bool:
+        """Back-off pause; True if :meth:`_retry_now` ended it early."""
+        sleep = asyncio.ensure_future(self._sleep(seconds))
+        wake = asyncio.ensure_future(self._wake.wait())
+        try:
+            done, _ = await asyncio.wait({sleep, wake}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for t in (sleep, wake):
+                t.cancel()
+        if wake in done:
+            self._wake.clear()
+            return True
+        return False
+
+    def _retry_now(self) -> None:
+        """End a running back-off pause (new configuration: the next attempt may succeed)."""
+        self._wake.set()
 
     async def _connect_once(self, host: str, port: int, timeout_s: float) -> Uid:
         try:
@@ -363,9 +393,11 @@ class RptClient:
                 cs.static_type, cs.static_ipv4 = C.E133_STATIC_CONFIG_IPV4, str(address)
         return cs
 
-    def set_component_scope(self, cs: R.ComponentScope) -> None:
-        """New scope / static broker (SET COMPONENT_SCOPE). If it changes, the client leaves its broker;
-        with automatic reconnection it connects again in the new scope (to the static broker, if given)."""
+    def set_component_scope(self, cs: R.ComponentScope,
+                            disconnect_reason: int = C.E133_DISCONNECT_RPT_RECONFIGURE) -> None:
+        """New scope / static broker (SET COMPONENT_SCOPE via RPT or LLRP). If it changes, the client leaves
+        its broker (Disconnect with ``disconnect_reason``); with automatic reconnection it connects again in the
+        new scope (to the static broker, if given). A client waiting to reconnect tries again at once."""
         static = None
         if cs.static_type == C.E133_STATIC_CONFIG_IPV4:
             static = (cs.static_ipv4, cs.static_port)
@@ -378,16 +410,18 @@ class RptClient:
         if changed and self.connected:
             log.info("Scope changed to %r (static broker %s): reconnecting", cs.scope, static)
             # after the response to the SET has been sent
-            t = asyncio.get_running_loop().create_task(self._leave_broker(f"Scope changed to {cs.scope!r}"))
+            t = asyncio.get_running_loop().create_task(
+                self._leave_broker(f"Scope changed to {cs.scope!r}", disconnect_reason))
             self._background.add(t)
             t.add_done_callback(self._background.discard)
+        elif changed:
+            self._retry_now()
 
-    async def _leave_broker(self, reason: str) -> None:
+    async def _leave_broker(self, reason: str, code: int) -> None:
         await asyncio.sleep(0)
         if self._v and not self._v.closed:
-            try:
-                await self._v.send_broker(C.VECTOR_BROKER_DISCONNECT,  # 7.6: reconfigured via RPT
-                                          C.E133_DISCONNECT_RPT_RECONFIGURE.to_bytes(2, "big"))
+            try:  # 7.6 / 5.7: reconfigured via RPT or LLRP
+                await self._v.send_broker(C.VECTOR_BROKER_DISCONNECT, code.to_bytes(2, "big"))
             except (ConnectionError, OSError):
                 pass
         await self._shutdown(reason)
