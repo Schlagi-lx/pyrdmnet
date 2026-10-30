@@ -103,10 +103,13 @@ class RptClient:
 
     async def wait_connected(self, timeout_s: float) -> None:
         """Wait until the (automatically re-)established connection is up."""
-        if self.connected:
-            return
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_s
         try:
-            await asyncio.wait_for(self._is_connected.wait(), timeout_s)
+            while not self.connected:
+                await asyncio.wait_for(self._is_connected.wait(), max(deadline - loop.time(), 0))
+                if not self.connected:  # event of a connection that is already closing again
+                    self._is_connected.clear()
         except asyncio.TimeoutError as error:
             raise RdmnetConnectionError(f"Not connected to broker within {timeout_s:g} s"
                                         + (f" (last error: {self.last_connect_error})" if self.last_connect_error
@@ -257,12 +260,12 @@ class RptClient:
                              return_exceptions=True)
 
     async def _shutdown(self, reason: str) -> None:
+        self._is_connected.clear()  # before awaiting the close: wait_connected() must not see a stale "connected"
         if self._v:
             await self._v.close()
         f = self._update_reply
         if f is not None and not f.done():
             f.set_exception(RdmnetConnectionError(f"Connection closed: {reason}"))
-        self._is_connected.clear()
         if not self.disconnected.is_set():
             self.disconnect_reason = reason
             self.disconnected.set()

@@ -4,6 +4,7 @@ import asyncio
 import socket
 import tempfile
 import threading
+import time
 import unittest
 import uuid
 from pathlib import Path
@@ -207,7 +208,7 @@ class TestFacadeExternalBroker(unittest.TestCase):
         self.port = free_port()
         self.broker = self.on_loop(self.start_broker())
         self.gateway = SimulatedGateway()
-        self.gateway.reconnect_min_s = 0.01  # gateway back before the controller fetches the client list
+        self.gateway.reconnect_min_s = 0.01
         self.on_loop(self.gateway.connect("127.0.0.1", self.port, auto_reconnect=True))
         self.tmp = tempfile.TemporaryDirectory()
 
@@ -241,8 +242,14 @@ class TestFacadeExternalBroker(unittest.TestCase):
                 await asyncio.sleep(0.5)
                 return await self.start_broker()
             pending = asyncio.run_coroutine_threadsafe(restart_later(), self.loop)
-            devices = module.find_devices()  # waits for the automatic reconnection
+            devices = module.find_devices()  # waits for the automatic reconnection instead of failing
             self.broker = pending.result(5)
+            # the gateway reconnects on its own schedule (on Windows a refused localhost connect takes
+            # about 2 s), so it may join the client list only after the controller is back
+            deadline = time.monotonic() + 10
+            while len(devices) != 1 and time.monotonic() < deadline:
+                time.sleep(0.1)
+                devices = module.find_devices()
             self.assertEqual(len(devices), 1)
             self.assertTrue(module.controller.write_enabled)  # same controller object, permission kept
             self.assertGreaterEqual(module.controller.reconnect_count, 1)
