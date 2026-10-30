@@ -17,9 +17,9 @@ Methods (in this order):
 
 from __future__ import annotations
 
+import ipaddress
 import re
 import shutil
-import socket
 import subprocess
 import threading
 import time
@@ -107,7 +107,7 @@ class DnssdRegistration:
                                "(pip install zeroconf)") from error
         type = f"{SERVICE_TYPE}.local."
         self._zc_info = ServiceInfo(
-            type, f"{self.name}.{type}", addresses=[socket.inet_aton(self.ip)], port=self.port,
+            type, f"{self.name}.{type}", addresses=[ipaddress.ip_address(self.ip).packed], port=self.port,
             properties=txt_entries(self.scope, self.cid, self.uid), server=f"pyrdmnet-{self.cid.hex[:8]}.local.")
         self._zc = Zeroconf(interfaces=[self.ip])
         self._zc.register_service(self._zc_info)

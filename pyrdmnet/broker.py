@@ -46,8 +46,10 @@ log = logging.getLogger("pyrdmnet.broker")
 
 @dataclass
 class BrokerConfig:
-    host: str = "127.0.0.1"
+    host: str = "127.0.0.1"  # IPv4 or IPv6 address to listen on
     port: int = 8888  # 0 = pick a free port
+    # further addresses on the same port, typically IPv6 next to IPv4: ("::",) all, ("::1",) loopback
+    extra_hosts: tuple[str, ...] = ()
     scope: str = C.E133_DEFAULT_SCOPE
     search_domain: str = C.E133_DEFAULT_DOMAIN  # for RDM SEARCH_DOMAIN
     device_label: str = "pyrdmnet Broker"  # for RDM DEVICE_LABEL
@@ -96,7 +98,8 @@ def _now() -> str:
 class RdmnetBroker:
     def __init__(self, config: BrokerConfig | None = None):
         self.config = config or BrokerConfig()
-        self._server: asyncio.base_events.Server | None = None
+        self._servers: list[asyncio.base_events.Server] = []
+        self.addresses: list[tuple[str, int]] = []  # (host, port) the broker listens on
         self._clients: dict[Uid, _Client] = {}  # RPT clients by UID
         self._ept_clients: dict[uuid.UUID, _Client] = {}  # EPT clients by CID
         self._dyn_uid_by_rid: dict[tuple[int, uuid.UUID], Uid] = {}
@@ -118,12 +121,24 @@ class RdmnetBroker:
     # ----------------------------------------------------------------- Lifecycle
     async def start(self) -> None:
         self._stopping = False
-        self._server = await asyncio.start_server(self._new_connection, self.config.host, self.config.port)
-        self.port = self._server.sockets[0].getsockname()[1]
+        k = self.config
+        try:
+            first = await asyncio.start_server(self._new_connection, k.host, k.port)
+            self._servers = [first]
+            self.port = first.sockets[0].getsockname()[1]
+            for host in k.extra_hosts:  # same port on every address (with port 0: the one just chosen)
+                self._servers.append(await asyncio.start_server(self._new_connection, host, self.port))
+        except OSError:
+            for server in self._servers:
+                server.close()
+            self._servers = []
+            raise
+        self.addresses = [(k.host, self.port)] + [(h, self.port) for h in k.extra_hosts]
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         if self.config.llrp:
+            ipv4_host = self.config.host if ":" not in self.config.host else ""
             network = self.config.llrp_network or LlrpNetwork(
-                adapter=self.config.host if self.config.host not in ("", "0.0.0.0", "127.0.0.1") else "0.0.0.0")
+                adapter=ipv4_host if ipv4_host not in ("", "0.0.0.0", "127.0.0.1") else "0.0.0.0")
             self.llrp_target = LlrpTarget(self.config.uid, self.config.cid, C.LLRP_TYPE_BROKER,
                                           self.responder.respond, network)
             try:
@@ -132,6 +147,7 @@ class RdmnetBroker:
                 self.llrp_target = None
                 self._event("llrp_unavailable", error=str(error))
         self._event("broker_started", host=self.config.host, port=self.port, scope=self.config.scope,
+                    addresses=[P.format_address(h, p) for h, p in self.addresses],
                        uid=str(self.config.uid), cid=str(self.config.cid))
 
     async def stop(self) -> None:
@@ -142,8 +158,8 @@ class RdmnetBroker:
             await self.llrp_target.stop()
             self.llrp_target = None
         # stop accepting first: clients with automatic reconnection would otherwise reconnect to the stopping broker
-        if self._server:
-            self._server.close()
+        for server in self._servers:
+            server.close()
         for c in self._all_clients():
             try:
                 await c.connection.send_broker(C.VECTOR_BROKER_DISCONNECT, C.E133_DISCONNECT_SHUTDOWN.to_bytes(2, "big"))
@@ -154,8 +170,9 @@ class RdmnetBroker:
             t.cancel()
         if self._connection_tasks:
             await asyncio.gather(*self._connection_tasks, return_exceptions=True)
-        if self._server:
-            await self._server.wait_closed()
+        for server in self._servers:
+            await server.wait_closed()
+        self._servers = []
         self._clients.clear()
         self._ept_clients.clear()
         self._event("broker_stopped")
@@ -165,6 +182,7 @@ class RdmnetBroker:
             "time_utc": _now(),
             "host": self.config.host,
             "port": self.port,
+            "addresses": [P.format_address(h, p) for h, p in self.addresses],
             "scope": self.config.scope,
             "broker_uid": str(self.config.uid),
             "state": {C.E133_BROKER_ACTIVE: "active", C.E133_BROKER_STANDBY: "standby",
@@ -176,6 +194,23 @@ class RdmnetBroker:
             ],
             "counters": dict(self.counters),
         }
+
+    async def redirect_client(self, uid: Uid, host: str, port: int) -> None:
+        """Send a connected RPT client to another broker (Client Redirect IPv4/IPv6, E1.33 6.3.1.5/6).
+
+        An IPv6 redirect may only be sent over an IPv6 connection (6.3.1.6).
+        """
+        client = self._clients.get(uid)
+        if client is None:
+            raise KeyError(f"No client with UID {uid}")
+        vector, data = P.build_redirect(host, port)
+        peer = client.connection.peer_address
+        if vector == C.VECTOR_BROKER_REDIRECT_V6 and (peer is None or ":" not in peer[0]
+                                                      or peer[0].startswith("::ffff:")):
+            raise ValueError("Client Redirect IPv6 is only allowed over an IPv6 connection (E1.33 6.3.1.6)")
+        await client.connection.send_broker(vector, data)
+        self.counters["redirect_sent"] += 1
+        self._event("client_redirected", uid=str(uid), to=P.format_address(host, port))
 
     def set_state(self, state: int, **details) -> None:
         """Set ACTIVE/STANDBY (used by the DNS-SD announcer, E1.33 9.1.4)."""

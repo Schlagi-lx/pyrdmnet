@@ -5,7 +5,8 @@ lost connection the client reconnects; the first two attempts are immediate, the
 applies that grows by a random 1-5 s whenever the TCP connection was established but the
 connect failed (capped at 30 s). Failed TCP connects do not grow the back-off; they are
 retried every ``reconnect_min_s`` (an implementation choice to avoid a busy loop).
-Client Redirect IPv4 (6.2.5.3.2) is followed during connect and while connected.
+Client Redirect IPv4 and IPv6 (6.2.5.3.2, 6.3.1.5/6) is followed during connect and while
+connected. Brokers are reached over IPv4 or IPv6, whatever the address is.
 
 RPT clients count unhealthy TCP connections (heartbeat timeout, 6.2.4.1.3) per scope for
 TCP_COMMS_STATUS (7.6.3) and keep the scope configuration that their default responder
@@ -38,9 +39,12 @@ class RdmnetConnectionError(ConnectionError):
         self.established = established  # True: TCP connection was established, the connect itself failed
 
 
+REDIRECT_VECTORS = (C.VECTOR_BROKER_REDIRECT_V4, C.VECTOR_BROKER_REDIRECT_V6)
+
+
 class _Redirect(Exception):
     def __init__(self, host: str, port: int):
-        super().__init__(f"redirect to {host}:{port}")
+        super().__init__(f"redirect to {P.format_address(host, port)}")
         self.host, self.port = host, port
 
 
@@ -131,7 +135,7 @@ class RptClient:
             try:
                 return await self._connect_once(*self.target, self._connect_timeout_s)
             except _Redirect as r:
-                log.info("Broker redirects %s:%s to %s:%s", *self.target, r.host, r.port)
+                log.info("Broker redirects %s to %s", P.format_address(*self.target), P.format_address(r.host, r.port))
                 self.target = (r.host, r.port)
         raise RdmnetConnectionError(f"More than {MAX_REDIRECTS} redirects", established=True)
 
@@ -159,7 +163,7 @@ class RptClient:
                             backoff = min(backoff + random.uniform(*self.backoff_step_s), self.backoff_max_s)
                         continue
                     self.reconnect_count += 1
-                    log.info("Reconnected to broker %s:%s (attempt %d)", *self.target, attempt)
+                    log.info("Reconnected to broker %s (attempt %d)", P.format_address(*self.target), attempt)
                     break
             finally:
                 self.reconnecting = False
@@ -168,7 +172,8 @@ class RptClient:
         try:
             reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout_s)
         except (OSError, asyncio.TimeoutError) as error:
-            raise RdmnetConnectionError(f"Broker {host}:{port} not reachable: {error}", established=False) from error
+            raise RdmnetConnectionError(f"Broker {P.format_address(host, port)} not reachable: {error}",
+                                        established=False) from error
         v = TcpConnection(reader, writer, self.cid)
         entry = self._connect_entry()
         flags = C.BROKER_CONNECT_FLAG_INCREMENTAL if self.incremental else 0
@@ -177,8 +182,8 @@ class RptClient:
             await v.send_broker(C.VECTOR_BROKER_CONNECT, cd.encode())
             roots = await asyncio.wait_for(v.read(), timeout_s)
             bp = P.read_broker(roots[0].data)
-            if roots[0].vector == C.VECTOR_ROOT_E133_BROKER and bp.vector == C.VECTOR_BROKER_REDIRECT_V4:
-                raise _Redirect(*P.read_redirect_v4(bp.data))
+            if roots[0].vector == C.VECTOR_ROOT_E133_BROKER and bp.vector in REDIRECT_VECTORS:
+                raise _Redirect(*P.read_redirect(bp.vector, bp.data))
             if roots[0].vector != C.VECTOR_ROOT_E133_BROKER or bp.vector != C.VECTOR_BROKER_CONNECT_REPLY:
                 raise RdmnetConnectionError("Broker did not answer with Connect Reply", established=True)
             rep = P.read_connect_reply(bp.data)
@@ -204,7 +209,7 @@ class RptClient:
                        asyncio.create_task(self._heartbeat_loop())]
         self._is_connected.set()
         await self._after_connect()
-        self._notify(True, f"connected to {host}:{port}")
+        self._notify(True, f"connected to {P.format_address(host, port)}")
         return rep.client_uid
 
     def _notify(self, connected: bool, text: str) -> None:
@@ -304,9 +309,9 @@ class RptClient:
                             if bp.vector == C.VECTOR_BROKER_DISCONNECT:
                                 reason = "Broker sent Disconnect"
                                 return
-                            if bp.vector == C.VECTOR_BROKER_REDIRECT_V4:  # 6.2.5.3.2, also while connected
-                                self.target = P.read_redirect_v4(bp.data)
-                                reason = f"Broker redirect to {self.target[0]}:{self.target[1]}"
+                            if bp.vector in REDIRECT_VECTORS:  # 6.2.5.3.2, also while connected
+                                self.target = P.read_redirect(bp.vector, bp.data)
+                                reason = f"Broker redirect to {P.format_address(*self.target)}"
                                 return
                             if bp.vector == C.VECTOR_BROKER_CONNECT_REPLY:
                                 f = self._update_reply

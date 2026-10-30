@@ -24,6 +24,7 @@ from pathlib import Path
 
 from . import __version__
 from . import constants as C
+from . import pdu as P
 from .settings_check import ExpectedSetting
 from .readout import DeviceReader
 from .broker import BrokerConfig, RdmnetBroker
@@ -40,10 +41,12 @@ def _host_port(text: str) -> tuple[str, int]:
 
 async def _broker(args) -> None:
     b = RdmnetBroker(BrokerConfig(host=args.host, port=args.port, scope=args.scope, llrp=args.llrp,
+                                  extra_hosts=tuple(args.ipv6 or ()),
                                   event_file=Path(args.log) if args.log else None))
     await b.start()
     announcer = None
-    print(f"Broker running on {args.host}:{b.port}, scope \"{args.scope}\", UID {b.config.uid}. Ctrl+C to quit.")
+    listening = ", ".join(P.format_address(h, p) for h, p in b.addresses)
+    print(f"Broker running on {listening}, scope \"{args.scope}\", UID {b.config.uid}. Ctrl+C to quit.")
     if args.dnssd:
         from .dnssd import BrokerAnnouncer
         announcer = BrokerAnnouncer(b, args.host, on_message=lambda text: print(f"WARNING: {text}"))
@@ -291,7 +294,9 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="command", required=True)
 
     b = sub.add_parser("broker", help="start the broker")
-    b.add_argument("--host", default="127.0.0.1", help="IP of the network adapter (0.0.0.0 = all)")
+    b.add_argument("--host", default="127.0.0.1", help="IP of the network adapter (0.0.0.0 = all IPv4, :: = all IPv6)")
+    b.add_argument("--ipv6", action="append", metavar="ADDRESS",
+                   help="also listen on this IPv6 address (same port), e.g. :: (all) or ::1; repeatable")
     b.add_argument("--port", type=int, default=8888)
     b.add_argument("--scope", default=C.E133_DEFAULT_SCOPE)
     b.add_argument("--log", help="write events as JSONL to this file")
