@@ -24,3 +24,7 @@
 - [x] 11. README: replace the `<konto>` placeholder in the clone command
 - [x] 12a. Translate the project to English (0.5.0)
 - [ ] 12. Release 0.5 with changelog, possibly PyPI
+
+## Afterwards
+
+- [ ] 13. Switch GelMatch to 0.5 – only after the items above are done; guide: [docs/MIGRATING_TO_0.5.md](docs/MIGRATING_TO_0.5.md)

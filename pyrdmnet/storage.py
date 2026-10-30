@@ -7,8 +7,9 @@ keeps this module independent of the lab's schema.
 
 Schema version 2 uses English table and column names. Databases written by
 pyrdmnet 0.4 (schema version 1, German names) are migrated automatically on
-open. JSON columns (``profile_json``, ``details_json``, ``error_json``) are
-copied unchanged, so rows migrated from version 1 keep their German JSON keys.
+open, including the keys inside the JSON columns (``profile_json``,
+``details_json``, ``error_json``). Free text inside JSON (hints, error
+messages) stays in the language it was written in.
 """
 
 from __future__ import annotations
@@ -121,8 +122,63 @@ _MIGRATION_V1 = [
         ("gdtf_modus", "gdtf_mode"), ("personality_nr", "personality_num"), ("bestaetigt_utc", "confirmed_utc"),
         ("bestaetigt_von", "confirmed_by")]),
 ]
-# check status values of schema 1 -> schema 2
-_STATUS_V1 = {"ABWEICHUNG": "DEVIATION", "NICHT_PRUEFBAR": "NOT_CHECKABLE", "OK_UNBESTAETIGT": "OK_UNCONFIRMED"}
+# status values of schema 1 -> schema 2 (settings checks and sensor snapshots)
+_STATUS_V1 = {"ABWEICHUNG": "DEVIATION", "NICHT_PRUEFBAR": "NOT_CHECKABLE", "OK_UNBESTAETIGT": "OK_UNCONFIRMED",
+              "teilweise": "partial", "fehlgeschlagen": "failed"}
+# JSON keys written by pyrdmnet 0.4 -> 0.5 (profile_json, details_json, error_json); unknown keys stay as they are
+_JSON_KEYS_V1 = {
+    "abgleich": "check", "abweichungen": "deviations", "adresse": "address", "aenderungen": "changes",
+    "aktiv": "active", "aktuell": "current", "alt": "old", "antwort": "response", "anwendung": "application",
+    "aufgezeichnet": "recorded", "ausgelesen_utc": "read_utc", "ausserhalb_normal": "outside_normal",
+    "bereich_max": "range_max", "bereich_min": "range_min", "bericht": "report", "beschreibung": "description",
+    "bestaetigt_utc": "confirmed_utc", "bestaetigt_von": "confirmed_by", "checkliste": "checklist",
+    "dauer_s": "duration_s", "einheit": "unit", "einheit_text": "unit_text", "ende_utc": "end_utc",
+    "ereignis": "event", "erfolgreich": "success", "erwartung": "expected", "faktor": "factor", "fehler": "error",
+    "gdtf_modus": "gdtf_mode", "gegenstelle": "peer", "geraete": "devices", "geraete_label": "device_label",
+    "geraete_stunden": "device_hours", "gesetzt": "set", "grund": "reason", "hersteller": "manufacturer",
+    "hersteller_id": "manufacturer_id", "hinweise": "hints", "hoechster": "highest", "ist": "actual",
+    "lampen_stunden": "lamp_hours", "messrelevant": "measurement_relevant",
+    "messung_erlaubt": "measurement_allowed", "modell": "model", "modell_id": "model_id", "modus": "mode",
+    "neu": "new", "nicht_verfuegbar": "unavailable", "niedrigster": "lowest", "nummer": "number",
+    "personality_aktuell": "personality_current", "personality_anzahl": "personality_count",
+    "personality_nr": "personality_num", "praefix": "prefix", "produktkategorie": "product_category",
+    "produktkategorie_text": "product_category_text", "profil": "profile", "profil_nachher": "profile_after",
+    "punkt": "item", "rdm_protokoll": "rdm_protocol", "recorded_unterstuetzung": "recorded_support", "roh": "raw",
+    "schritt": "step", "schritte": "steps", "sensor_anzahl": "sensor_count", "sensoren": "sensors",
+    "soll": "target", "soll_personality": "target_personality", "startadresse": "start_address",
+    "statisch_ipv4": "static_ipv4", "statisch_ipv6": "static_ipv6", "statisch_port": "static_port",
+    "statisch_typ": "static_type", "subdevice_anzahl": "subdevice_count", "typ": "type", "typ_text": "type_text",
+    "unterstuetzte_pids": "supported_pids", "vorher": "before", "wert": "value", "werte": "values",
+    "zeit_utc": "time_utc", "ziel": "target", "ziel_adresse": "target_address", "ziel_modus": "target_mode",
+    "zurueck": "return", "zurueck_adresse": "return_address", "zurueck_modus": "return_mode",
+}
+
+
+def _translate_json_v1(value):
+    """Translate the keys (and "status" values) of a JSON document written by pyrdmnet 0.4."""
+    if isinstance(value, dict):
+        out = {}
+        for key, item in value.items():
+            new_key = _JSON_KEYS_V1.get(key, key)
+            item = _translate_json_v1(item)
+            if new_key == "status" and isinstance(item, str):
+                item = _STATUS_V1.get(item, item)
+            out[new_key] = item
+        return out
+    if isinstance(value, list):
+        return [_translate_json_v1(item) for item in value]
+    return value
+
+
+def _translate_json_column(db: sqlite3.Connection, table: str, column: str, key: str) -> None:
+    rows = db.execute(f"SELECT {key}, {column} FROM {table} WHERE {column} IS NOT NULL").fetchall()
+    for row_id, text in rows:
+        try:
+            doc = json.loads(text)
+        except ValueError:
+            continue  # not JSON: leave unchanged
+        db.execute(f"UPDATE {table} SET {column} = ? WHERE {key} = ?",
+                   (json.dumps(_translate_json_v1(doc), ensure_ascii=False), row_id))
 
 
 def _migrate_v1(db: sqlite3.Connection) -> None:
@@ -143,6 +199,10 @@ def _migrate_v1(db: sqlite3.Connection) -> None:
             db.execute("ALTER TABLE rdm_sensor_definition_v2 RENAME TO rdm_sensor_definition")
             for old, new in _STATUS_V1.items():
                 db.execute("UPDATE rdm_check SET status = ? WHERE status = ?", (new, old))
+                db.execute("UPDATE rdm_snapshot SET status = ? WHERE status = ?", (new, old))
+            _translate_json_column(db, "rdm_device", "profile_json", "id")
+            _translate_json_column(db, "rdm_check", "details_json", "id")
+            _translate_json_column(db, "rdm_snapshot", "error_json", "id")
             db.execute("UPDATE rdm_change SET parameter = 'NONE' WHERE parameter = 'KEINE'")
             db.execute("UPDATE rdm_schema SET version = ?", (SCHEMA_VERSION,))
     finally:

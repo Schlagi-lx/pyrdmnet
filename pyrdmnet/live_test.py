@@ -83,7 +83,7 @@ def _now() -> str:
 
 
 class LiveTest:
-    folder_prefix = "livetest"
+    folder_prefix = "live_test"
     report_title = "Live-Test"
     report_mode = "read-only (no RDM SET)"
 

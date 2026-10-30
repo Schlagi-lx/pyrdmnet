@@ -30,8 +30,9 @@ are no German aliases.
 - Schema version 2 with English table and column names (`rdm_geraet` → `rdm_device`, `rdm_schnappschuss` →
   `rdm_snapshot`, `rdm_sensorwert` → `rdm_sensor_value`, `rdm_abgleich` → `rdm_check`, `rdm_aenderung` →
   `rdm_change`, `rdm_personality_zuordnung` → `rdm_personality_mapping`).
-- Databases written by 0.4 (schema 1) are migrated automatically when opened with `RdmStore`. Phase and status
-  values are translated; JSON columns of migrated rows are copied unchanged and keep their German keys.
+- Databases written by 0.4 (schema 1) are migrated automatically when opened with `RdmStore`: tables, columns,
+  phase and status values, and the keys inside the JSON columns (`profile_json`, `details_json`, `error_json`).
+  Free text inside JSON (hints, error messages) stays in the language it was written in.
 
 ## 0.4.1 and earlier
 

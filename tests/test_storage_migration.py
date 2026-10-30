@@ -1,5 +1,6 @@
 """Migration of pyrdmnet 0.4 databases (schema 1, German names) to schema 2."""
 
+import json
 import sqlite3
 import unittest
 
@@ -78,11 +79,14 @@ def v1_database() -> sqlite3.Connection:
     db.execute("INSERT INTO rdm_sensor_definition VALUES (7, 0, 0, 'Temperatur', 1, '°C', 0, 1.0, -40, 150, 10, 85, "
                "3, 'LED Temperatur', 1)")
     for sid, phase in ((1, "vor"), (2, "nach"), (3, "einzeln")):
-        db.execute("INSERT INTO rdm_schnappschuss VALUES (?, 7, 'm1', ?, '2026-10-01T10:00:00+00:00', 0.1, 'ok', NULL)",
-                   (sid, phase))
+        db.execute("INSERT INTO rdm_schnappschuss VALUES (?, 7, 'm1', ?, '2026-10-01T10:00:00+00:00', 0.1, ?, ?)",
+                   (sid, phase, "teilweise" if sid == 2 else "ok",
+                    '[{"pid": "SENSOR_VALUE", "grund": "Zeitüberschreitung"}]' if sid == 2 else None))
         db.execute("INSERT INTO rdm_sensorwert VALUES (?, 0, 'LED Temperatur', 'Temperatur', '°C', 25.5, 255, "
                    "NULL, NULL, NULL, 0)", (sid,))
-    db.execute("INSERT INTO rdm_abgleich VALUES (1, 7, 'sitzung', 'Direkt 6ch', 't', 'ABWEICHUNG', 0, '{}')")
+    details = ('{"status": "ABWEICHUNG", "messung_erlaubt": false, "abweichungen": ["Startadresse 1 statt 100"], '
+               '"soll_personality": 2, "unbekannt": {"typ": 1}}')
+    db.execute("INSERT INTO rdm_abgleich VALUES (1, 7, 'sitzung', 'Direkt 6ch', 't', 'ABWEICHUNG', 0, ?)", (details,))
     db.execute("INSERT INTO rdm_abgleich VALUES (2, 7, 'sitzung', 'Direkt 6ch', 't', 'OK_UNBESTAETIGT', 1, '{}')")
     db.execute("INSERT INTO rdm_aenderung VALUES (1, 7, 'sitzung', 't', 'KEINE', NULL, 'Fehler', 0)")
     db.execute("INSERT INTO rdm_aenderung VALUES (2, 7, 'sitzung', 't', 'DMX_START_ADDRESS', '1', '100', 1)")
@@ -102,7 +106,7 @@ class TestMigrationV1(unittest.TestCase):
                                    "rdm_aenderung", "rdm_personality_zuordnung", "rdm_sensor_definition_v1",
                                    "rdm_sensor_definition_v2"})
         self.assertEqual(db.execute("SELECT id, manufacturer_id, model, start_address, profile_json FROM rdm_device")
-                         .fetchone(), (7, 32752, "Modell", 100, '{"hersteller": "Hersteller"}'))
+                         .fetchone(), (7, 32752, "Modell", 100, '{"manufacturer": "Hersteller"}'))
         self.assertEqual(db.execute("SELECT device_id, sensor_num, description, measurement_relevant "
                                     "FROM rdm_sensor_definition").fetchone(), (7, 0, "LED Temperatur", 1))
         self.assertEqual([r[0] for r in db.execute("SELECT phase FROM rdm_snapshot ORDER BY id")],
@@ -110,6 +114,15 @@ class TestMigrationV1(unittest.TestCase):
         self.assertEqual(len(store.sensor_values_for_measurement("m1")), 3)
         self.assertEqual([r[0] for r in db.execute("SELECT status FROM rdm_check ORDER BY id")],
                          ["DEVIATION", "OK_UNCONFIRMED"])
+        # keys inside JSON are translated, nested too; free text and unknown keys stay as they are
+        details = json.loads(db.execute("SELECT details_json FROM rdm_check WHERE id = 1").fetchone()[0])
+        self.assertEqual(details, {"status": "DEVIATION", "measurement_allowed": False,
+                                   "deviations": ["Startadresse 1 statt 100"], "target_personality": 2,
+                                   "unbekannt": {"type": 1}})
+        self.assertEqual([r[0] for r in db.execute("SELECT status FROM rdm_snapshot ORDER BY id")],
+                         ["ok", "partial", "ok"])
+        error = json.loads(db.execute("SELECT error_json FROM rdm_snapshot WHERE id = 2").fetchone()[0])
+        self.assertEqual(error, [{"pid": "SENSOR_VALUE", "reason": "Zeitüberschreitung"}])
         self.assertEqual([r[0] for r in db.execute("SELECT parameter FROM rdm_change ORDER BY id")],
                          ["NONE", "DMX_START_ADDRESS"])
         m = store.find_mapping(32752, 257, 65536, "Direkt 6ch")
