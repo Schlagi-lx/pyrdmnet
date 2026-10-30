@@ -117,22 +117,59 @@ def read_broker(data: bytes) -> BrokerPdu:
     return BrokerPdu(vector, bytes(pdu[header + 2:]))
 
 
+EPT_SUB_PROTOCOL_LENGTH = 36  # protocol vector (4) + protocol string (32), E1.33 6.3.2.3
+EPT_PROTOCOL_STRING_LENGTH = 32
+
+
+@dataclass(frozen=True)
+class EptSubProtocol:
+    """One entry of an EPT client's sub-protocol list (E1.33 6.3.2.3, 8.2.2)."""
+
+    vector: int  # high 16 bits: ESTA manufacturer ID, low 16 bits: protocol ID
+    name: str = ""
+
+    def encode(self) -> bytes:
+        raw = self.name.encode("utf-8")[:EPT_PROTOCOL_STRING_LENGTH - 1]
+        return struct.pack(">I", self.vector) + raw.ljust(EPT_PROTOCOL_STRING_LENGTH, b"\x00")
+
+
+def read_ept_sub_protocols(data: bytes) -> list[EptSubProtocol]:
+    if len(data) % EPT_SUB_PROTOCOL_LENGTH:
+        raise ProtocolError(f"EPT sub-protocol list of {len(data)} bytes is not a multiple of 36")
+    return [EptSubProtocol(struct.unpack(">I", data[i:i + 4])[0], _null_string(data[i + 4:i + 36]))
+            for i in range(0, len(data), EPT_SUB_PROTOCOL_LENGTH)]
+
+
 @dataclass
 class ClientEntry:
-    """RPT client entry (E1.33 6.3.2)."""
+    """Client entry (E1.33 6.3.2): RPT (UID, type, binding CID) or EPT (sub-protocol list)."""
 
     cid: uuid.UUID
     uid: Uid
-    type: int  # RPT_CLIENT_TYPE_DEVICE / _CONTROLLER
+    type: int  # RPT_CLIENT_TYPE_DEVICE / _CONTROLLER; 0xFF for EPT and unknown protocols
     binding_cid: uuid.UUID = field(default_factory=lambda: uuid.UUID(int=0))
     protocol: int = C.E133_CLIENT_PROTOCOL_RPT
+    ept_protocols: tuple[EptSubProtocol, ...] = ()
+
+    @classmethod
+    def ept(cls, cid: uuid.UUID, protocols) -> "ClientEntry":
+        return cls(cid, Uid(0, 0), 0xFF, protocol=C.E133_CLIENT_PROTOCOL_EPT, ept_protocols=tuple(protocols))
+
+    @property
+    def is_ept(self) -> bool:
+        return self.protocol == C.E133_CLIENT_PROTOCOL_EPT
 
     def encode(self) -> bytes:
-        payload = self.uid.to_bytes() + bytes((self.type,)) + self.binding_cid.bytes
+        if self.is_ept:
+            payload = b"".join(p.encode() for p in self.ept_protocols)
+        else:
+            payload = self.uid.to_bytes() + bytes((self.type,)) + self.binding_cid.bytes
         return flags_length(3 + 4 + 16 + len(payload)) + struct.pack(">I", self.protocol) + self.cid.bytes + payload
 
     @property
     def type_text(self) -> str:
+        if self.is_ept:
+            return "EPT"
         return {0: "Device", 1: "Controller"}.get(self.type, f"Type {self.type}")
 
 
@@ -144,9 +181,11 @@ def read_client_entries(data: bytes) -> list[ClientEntry]:
         (prot,) = struct.unpack(">I", pdu[header:header + 4])
         cid = uuid.UUID(bytes=bytes(pdu[header + 4:header + 20]))
         payload = pdu[header + 20:]
+        if prot == C.E133_CLIENT_PROTOCOL_EPT:
+            entries.append(ClientEntry.ept(cid, read_ept_sub_protocols(bytes(payload))))
+            continue
         if prot != C.E133_CLIENT_PROTOCOL_RPT:
-            # EPT clients are recognised but not supported by this module.
-            entries.append(ClientEntry(cid, Uid(0, 0), 0xFF, protocol=prot))
+            entries.append(ClientEntry(cid, Uid(0, 0), 0xFF, protocol=prot))  # unknown protocol: kept as is
             continue
         if len(payload) != 23:
             raise ProtocolError(f"RPT client entry with {len(payload)} bytes instead of 23")

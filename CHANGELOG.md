@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- EPT support in the broker (E1.33 section 8, 9.3): EPT clients connect with CLIENT_PROTOCOL_EPT (zero UIDs in
+  the Connect Reply), get their own client list with incremental updates and Client Entry Update, and exchange
+  EPT data. Blocks with PDU inheritance (e.g. one message to several CIDs, Appendix D.9) are split per destination
+  and forwarded complete; unknown vectors and CIDs are answered with EPT status messages. Sender CIDs are checked.
+- New module `ept.py` with EPT encoding and `EptClient`.
+- `ClientEntry` carries EPT sub-protocols (`ept_protocols`, `ClientEntry.ept()`); `type_text` is "EPT" for them.
+
 ## 0.5.0
 
 **Breaking change: the whole project is now in English.** Code that uses pyrdmnet 0.4 has to be adapted; there

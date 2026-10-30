@@ -15,7 +15,7 @@ through a synchronous interface.
 
 | | |
 |---|---|
-| Software tests | 133/133 passing (Python 3.10–3.13, standard library only) |
+| Software tests | 149/149 passing (Python 3.10–3.13, standard library only) |
 | Real-world test | with an **LSS MasterPort 2** (firmware 2.13) as RDMnet gateway and an **ETC ColorSource PAR**: broker discovery via mDNS, connection, finding devices, reading, setting mode/start address and reading back (tested with 0.4) |
 | Other gateways/devices | not tested – feedback welcome |
 
@@ -25,6 +25,8 @@ No E1.33 conformance testing, no certification. Use at your own risk (see licens
 
 - **Broker** per ANSI E1.33 (asyncio): connect with scope check, dynamic UIDs, client list, RPT forwarding
   (including broadcast), heartbeat, packet capture as JSONL, Client Entry Update (change an entry without reconnecting)
+- **EPT** (E1.33 section 8): the broker accepts EPT clients, keeps their client list and forwards EPT data between
+  them, including one-to-many messages packed with PDU inheritance; `EptClient` for own tools and tests
 - **Broker RDM responder**: controllers can query the broker itself (`COMPONENT_SCOPE`, `SEARCH_DOMAIN`,
   `BROKER_STATUS`, device info). Scope and state cannot be changed via RDM.
 - **mDNS registration** `_rdmnet._tcp` with scope subtype – via Bonjour (`dns-sd`, available on macOS), otherwise
@@ -131,6 +133,7 @@ A mode change requires a confirmed mapping RDM personality ↔ mode (per model a
 | `dnssd.py` | mDNS registration |
 | `artnet_rdm.py` | RDM over Art-Net |
 | `llrp.py` | LLRP manager and target |
+| `ept.py` | EPT PDUs (with inheritance), EPT client |
 | `simulator.py`, `live_test.py`, `write_test.py`, `__main__.py` | simulator, tools, command line |
 
 ## Notes

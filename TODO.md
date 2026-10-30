@@ -8,8 +8,8 @@
 - [x] 3. LLRP: find gateways without a broker, set scope/broker address
       - [ ] 3a. LLRP over IPv6 (E1.33 requires IPv4 and IPv6 for the manager)
       - [ ] 3b. Simulator gateway as LLRP target; real-world test with the MasterPort
-- [ ] 4. Support PDU inheritance (flags) in `pdu.py`
-- [ ] 5. Pass EPT clients through properly or reject them
+- [x] 4. PDU inheritance – per E1.33 4.1.1 only allowed for EPT, done as part of 5
+- [x] 5. EPT in the broker: EPT clients, client list, forwarding (incl. inheritance), Unknown CID/Vector status
 - [ ] 6. Detect multiple brokers in the same scope via mDNS and warn
 
 ## Robustness in real-world use
