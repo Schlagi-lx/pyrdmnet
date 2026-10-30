@@ -53,7 +53,7 @@ class RptClient:
         except (OSError, asyncio.TimeoutError) as error:
             raise RdmnetConnectionError(f"Broker {host}:{port} not reachable: {error}") from error
         v = TcpConnection(reader, writer, self.cid)
-        entry = P.ClientEntry(self.cid, self.requested_uid, self.type, self.binding_cid)
+        entry = self._connect_entry()
         flags = C.BROKER_CONNECT_FLAG_INCREMENTAL if self.incremental else 0
         cd = P.ConnectData(self.scope, C.E133_VERSION, C.E133_DEFAULT_DOMAIN, flags, entry)
         try:
@@ -77,6 +77,10 @@ class RptClient:
                        asyncio.create_task(self._heartbeat_loop())]
         await self._after_connect()
         return rep.client_uid
+
+    def _connect_entry(self) -> P.ClientEntry:
+        """Client entry sent with Client Connect (overridden by EPT clients)."""
+        return P.ClientEntry(self.cid, self.requested_uid, self.type, self.binding_cid)
 
     async def update_entry(self, uid: Uid | None = None, type: int | None = None,
                                     binding_cid: uuid.UUID | None = None, incremental: bool | None = None,
@@ -165,6 +169,8 @@ class RptClient:
                             await self._on_broker(bp)
                         elif root.vector == C.VECTOR_ROOT_E133_RPT:
                             await self._on_rpt(P.read_rpt(root.data))
+                        elif root.vector == C.VECTOR_ROOT_E133_EPT:
+                            await self._on_ept(root)
                     except P.ProtocolError as error:
                         log.warning("Invalid message discarded: %s", error)
         except (asyncio.IncompleteReadError, ConnectionError, OSError):
@@ -203,4 +209,7 @@ class RptClient:
         pass
 
     async def _on_rpt(self, rpt: P.RptPdu) -> None:
+        pass
+
+    async def _on_ept(self, root: P.RootPdu) -> None:
         pass

@@ -13,9 +13,12 @@ Scope of V0.1:
 * Heartbeat (broker NULL) and disconnect on timeout
 * Event log in memory and optionally as a JSONL file
 
+* EPT clients (E1.33 section 8, 9.3): own client list, forwarding of EPT PDUs between
+  EPT clients (inherited PDUs are split per destination), Unknown CID / Unknown Vector status
 * LLRP target (optional, ``BrokerConfig.llrp``)
 
-Not included: EPT clients, redirect. DNS-SD registration via :mod:`pyrdmnet.dnssd`.
+Not included: redirect; the broker does not implement an EPT protocol itself.
+DNS-SD registration via :mod:`pyrdmnet.dnssd`.
 """
 
 from __future__ import annotations
@@ -32,6 +35,7 @@ from pathlib import Path
 
 from . import constants as C
 from . import pdu as P
+from . import ept as E
 from .broker_responder import BrokerResponder, BrokerResponderInfo
 from .llrp import LlrpNetwork, LlrpTarget
 from .rdm import ALL_CONTROLLERS, RdmFormatError, RdmMessage, Uid, manufacturer_from_mid_broadcast, is_device_broadcast
@@ -73,7 +77,16 @@ class _Client:
 
     @property
     def is_controller(self) -> bool:
-        return self.entry.type == C.RPT_CLIENT_TYPE_CONTROLLER
+        return not self.entry.is_ept and self.entry.type == C.RPT_CLIENT_TYPE_CONTROLLER
+
+    @property
+    def is_ept(self) -> bool:
+        return self.entry.is_ept
+
+    @property
+    def name(self) -> str:
+        """UID for RPT clients, CID for EPT clients (for events)."""
+        return str(self.entry.cid) if self.entry.is_ept else str(self.entry.uid)
 
 
 def _now() -> str:
@@ -84,7 +97,8 @@ class RdmnetBroker:
     def __init__(self, config: BrokerConfig | None = None):
         self.config = config or BrokerConfig()
         self._server: asyncio.base_events.Server | None = None
-        self._clients: dict[Uid, _Client] = {}
+        self._clients: dict[Uid, _Client] = {}  # RPT clients by UID
+        self._ept_clients: dict[uuid.UUID, _Client] = {}  # EPT clients by CID
         self._dyn_uid_by_rid: dict[tuple[int, uuid.UUID], Uid] = {}
         self._dyn_next: dict[int, int] = collections.defaultdict(lambda: 1)
         self._heartbeat_task: asyncio.Task | None = None
@@ -123,7 +137,7 @@ class RdmnetBroker:
         if self.llrp_target:
             await self.llrp_target.stop()
             self.llrp_target = None
-        for c in list(self._clients.values()):
+        for c in self._all_clients():
             try:
                 await c.connection.send_broker(C.VECTOR_BROKER_DISCONNECT, C.E133_DISCONNECT_SHUTDOWN.to_bytes(2, "big"))
             except Exception:
@@ -137,6 +151,7 @@ class RdmnetBroker:
         if self._connection_tasks:
             await asyncio.gather(*self._connection_tasks, return_exceptions=True)
         self._clients.clear()
+        self._ept_clients.clear()
         self._event("broker_stopped")
 
     def status(self) -> dict:
@@ -149,10 +164,13 @@ class RdmnetBroker:
             "clients": [
                 {"uid": str(c.uid), "type": c.entry.type_text, "cid": str(c.entry.cid),
                  "peer": c.connection.peer, "connected_since": c.connected_since}
-                for c in self._clients.values()
+                for c in self._all_clients()
             ],
             "counters": dict(self.counters),
         }
+
+    def _all_clients(self) -> list[_Client]:
+        return list(self._clients.values()) + list(self._ept_clients.values())
 
     # ----------------------------------------------------------------- Events
     def _event(self, kind: str, **data) -> None:
@@ -227,31 +245,42 @@ class RdmnetBroker:
                        uid=str(cd.client.uid), type=cd.client.type_text, protocol=f"{cd.client.protocol:#x}",
                        incremental=bool(cd.flags & C.BROKER_CONNECT_FLAG_INCREMENTAL))
         code, uid = self._check_connect(cd, root.cid)
-        await self._connect_reply(v, code, uid)
+        await self._connect_reply(v, code, uid, ept=cd.client.is_ept)
         if code != C.E133_CONNECT_OK:
             self.counters["connect_rejected"] += 1
             self._event("connect_rejected", peer=v.peer, reason=C.CONNECT_CODE_TEXT[code],
                            scope=cd.scope, uid=str(cd.client.uid))
             return None
-        entry = P.ClientEntry(cd.client.cid, uid, cd.client.type, cd.client.binding_cid)
-        client = _Client(v, entry, bool(cd.flags & C.BROKER_CONNECT_FLAG_INCREMENTAL), _now())
-        self._clients[uid] = client
+        incremental = bool(cd.flags & C.BROKER_CONNECT_FLAG_INCREMENTAL)
+        if cd.client.is_ept:
+            entry = cd.client
+            client = _Client(v, entry, incremental, _now())
+            self._ept_clients[entry.cid] = client
+        else:
+            entry = P.ClientEntry(cd.client.cid, uid, cd.client.type, cd.client.binding_cid)
+            client = _Client(v, entry, incremental, _now())
+            self._clients[uid] = client
         self.counters["connect_ok"] += 1
-        self._event("client_connected", uid=str(uid), type=entry.type_text, peer=v.peer)
-        await self._send_to_incremental(C.VECTOR_BROKER_CLIENT_ADD, entry.encode(), except_uid=uid)
+        self._event("client_connected", uid=str(uid), cid=str(entry.cid), type=entry.type_text, peer=v.peer)
+        await self._send_to_incremental(C.VECTOR_BROKER_CLIENT_ADD, entry.encode(), entry.protocol, except_client=client)
         return client
 
     def _check_connect(self, cd: P.ConnectData, root_cid: uuid.UUID) -> tuple[int, Uid]:
         if cd.scope != self.config.scope:
             return C.E133_CONNECT_SCOPE_MISMATCH, Uid(0, 0)
-        if cd.version != C.E133_VERSION or cd.client.protocol != C.E133_CLIENT_PROTOCOL_RPT:
+        if cd.version != C.E133_VERSION or cd.client.cid != root_cid:
             return C.E133_CONNECT_INVALID_CLIENT_ENTRY, Uid(0, 0)
-        if cd.client.type not in (C.RPT_CLIENT_TYPE_DEVICE, C.RPT_CLIENT_TYPE_CONTROLLER):
+        if cd.client.is_ept:
+            # 6.3.2.3: at least one sub-protocol; one EPT connection per CID (9.1.6: CID + protocol)
+            if not cd.client.ept_protocols or cd.client.cid in self._ept_clients:
+                return C.E133_CONNECT_INVALID_CLIENT_ENTRY, Uid(0, 0)
+        elif (cd.client.protocol != C.E133_CLIENT_PROTOCOL_RPT
+              or cd.client.type not in (C.RPT_CLIENT_TYPE_DEVICE, C.RPT_CLIENT_TYPE_CONTROLLER)):
             return C.E133_CONNECT_INVALID_CLIENT_ENTRY, Uid(0, 0)
-        if cd.client.cid != root_cid:
-            return C.E133_CONNECT_INVALID_CLIENT_ENTRY, Uid(0, 0)
-        if len(self._clients) >= self.config.max_clients:
+        if len(self._clients) + len(self._ept_clients) >= self.config.max_clients:
             return C.E133_CONNECT_CAPACITY_EXCEEDED, Uid(0, 0)
+        if cd.client.is_ept:
+            return C.E133_CONNECT_OK, Uid(0, 0)
         return self._check_uid(cd.client.uid, cd.client.cid)
 
     def _check_uid(self, uid: Uid, cid: uuid.UUID, own: _Client | None = None) -> tuple[int, Uid]:
@@ -273,19 +302,25 @@ class RdmnetBroker:
             self._dyn_uid_by_rid[key] = Uid(0x8000 | manufacturer, n)
         return self._dyn_uid_by_rid[key]
 
-    async def _connect_reply(self, v: TcpConnection, code: int, uid: Uid) -> None:
-        rep = P.ConnectReply(code, C.E133_VERSION, self.config.uid, uid)
+    async def _connect_reply(self, v: TcpConnection, code: int, uid: Uid, ept: bool = False) -> None:
+        # 9.1.5: for clients that are not RPT clients, both UIDs are all zeros
+        rep = P.ConnectReply(code, C.E133_VERSION, Uid(0, 0) if ept else self.config.uid, uid)
         await v.send_broker(C.VECTOR_BROKER_CONNECT_REPLY, rep.encode())
 
     async def _remove_client(self, client: _Client) -> None:
-        if self._clients.get(client.uid) is client:
-            del self._clients[client.uid]
-            self._event("client_disconnected", uid=str(client.uid), type=client.entry.type_text)
-            await self._send_to_incremental(C.VECTOR_BROKER_CLIENT_REMOVE, client.entry.encode())
+        table, key = (self._ept_clients, client.entry.cid) if client.is_ept else (self._clients, client.uid)
+        if table.get(key) is client:
+            del table[key]
+            self._event("client_disconnected", uid=str(client.uid), cid=str(client.entry.cid),
+                        type=client.entry.type_text)
+            await self._send_to_incremental(C.VECTOR_BROKER_CLIENT_REMOVE, client.entry.encode(), client.entry.protocol)
 
-    async def _send_to_incremental(self, vector: int, data: bytes, except_uid: Uid | None = None) -> None:
-        for c in list(self._clients.values()):
-            if c.incremental and c.uid != except_uid:
+    async def _send_to_incremental(self, vector: int, data: bytes, protocol: int,
+                                   except_client: _Client | None = None) -> None:
+        """Incremental list updates go to clients of the same client protocol only (9.1.6)."""
+        clients = self._ept_clients if protocol == C.E133_CLIENT_PROTOCOL_EPT else self._clients
+        for c in list(clients.values()):
+            if c.incremental and c is not except_client:
                 await self._safe_send(c, c.connection.send_broker(vector, data))
 
     async def _safe_send(self, client: _Client, coro) -> bool:
@@ -293,7 +328,7 @@ class RdmnetBroker:
             await coro
             return True
         except (ConnectionError, OSError) as error:
-            self._event("send_failed", uid=str(client.uid), error=str(error))
+            self._event("send_failed", client=client.name, error=str(error))
             await client.connection.close()
             return False
 
@@ -301,8 +336,12 @@ class RdmnetBroker:
     async def _handle_root(self, client: _Client, root: P.RootPdu) -> None:
         if root.vector == C.VECTOR_ROOT_E133_BROKER:
             await self._handle_broker(client, P.read_broker(root.data))
-        elif root.vector == C.VECTOR_ROOT_E133_RPT:
+        elif root.vector == C.VECTOR_ROOT_E133_RPT and not client.is_ept:
             await self._handle_rpt(client, P.read_rpt(root.data))
+        elif root.vector == C.VECTOR_ROOT_E133_EPT and client.is_ept:
+            await self._handle_ept(client, root)
+        elif root.vector in (C.VECTOR_ROOT_E133_RPT, C.VECTOR_ROOT_E133_EPT):
+            self.counters["root_protocol_mismatch"] += 1  # e.g. RPT PDU on an EPT connection
         else:
             self.counters["unknown_root_vector"] += 1
 
@@ -310,8 +349,9 @@ class RdmnetBroker:
         v = client.connection
         if bp.vector == C.VECTOR_BROKER_NULL:
             return
-        if bp.vector == C.VECTOR_BROKER_FETCH_CLIENT_LIST:
-            data = b"".join(c.entry.encode() for c in self._clients.values())
+        if bp.vector == C.VECTOR_BROKER_FETCH_CLIENT_LIST:  # list of the same client protocol (9.1.6)
+            clients = self._ept_clients if client.is_ept else self._clients
+            data = b"".join(c.entry.encode() for c in clients.values())
             await v.send_broker(C.VECTOR_BROKER_CONNECTED_CLIENT_LIST, data)
         elif bp.vector == C.VECTOR_BROKER_REQUEST_DYNAMIC_UIDS:
             responses = []
@@ -331,7 +371,7 @@ class RdmnetBroker:
         elif bp.vector == C.VECTOR_BROKER_CLIENT_ENTRY_UPDATE:
             await self._update_client_entry(client, bp.data)
         elif bp.vector == C.VECTOR_BROKER_DISCONNECT:
-            self._event("client_disconnect", uid=str(client.uid))
+            self._event("client_disconnect", client=client.name)
             await v.close()
         else:
             self.counters["broker_vector_ignored"] += 1
@@ -348,29 +388,33 @@ class RdmnetBroker:
             flags, new = P.read_client_entry_update(data)
         except P.ProtocolError:
             new = None
-        if (new is None or new.protocol != old.protocol or new.cid != old.cid
-                or new.type not in (C.RPT_CLIENT_TYPE_DEVICE, C.RPT_CLIENT_TYPE_CONTROLLER)):
+        if new is None or new.protocol != old.protocol or new.cid != old.cid:
+            code, uid = C.E133_CONNECT_INVALID_CLIENT_ENTRY, Uid(0, 0)
+        elif new.is_ept:
+            code, uid = (C.E133_CONNECT_OK if new.ept_protocols else C.E133_CONNECT_INVALID_CLIENT_ENTRY), Uid(0, 0)
+        elif new.type not in (C.RPT_CLIENT_TYPE_DEVICE, C.RPT_CLIENT_TYPE_CONTROLLER):
             code, uid = C.E133_CONNECT_INVALID_CLIENT_ENTRY, Uid(0, 0)
         else:
             code, uid = self._check_uid(new.uid, new.cid, own=client)
         if code != C.E133_CONNECT_OK:
             self.counters["entry_update_rejected"] += 1
-            self._event("entry_update_rejected", uid=str(old.uid), reason=C.CONNECT_CODE_TEXT[code])
-            await self._safe_send(client, self._connect_reply(v, code, uid))
+            self._event("entry_update_rejected", client=client.name, reason=C.CONNECT_CODE_TEXT[code])
+            await self._safe_send(client, self._connect_reply(v, code, uid, ept=old.is_ept))
             await self._remove_client(client)
             await v.close()
             return
-        entry = P.ClientEntry(new.cid, uid, new.type, new.binding_cid)
-        if uid != old.uid:
+        entry = new if new.is_ept else P.ClientEntry(new.cid, uid, new.type, new.binding_cid)
+        if not entry.is_ept and uid != old.uid:
             self._clients.pop(old.uid, None)
             self._clients[uid] = client
         client.entry = entry
         client.incremental = bool(flags & C.BROKER_CONNECT_FLAG_INCREMENTAL)
         self.counters["entry_update_ok"] += 1
-        self._event("entry_changed", uid_old=str(old.uid), uid=str(uid), type=entry.type_text,
+        self._event("entry_changed", uid_old=str(old.uid), uid=str(uid), cid=str(entry.cid), type=entry.type_text,
                        incremental=client.incremental)
-        await self._safe_send(client, self._connect_reply(v, C.E133_CONNECT_OK, uid))
-        await self._send_to_incremental(C.VECTOR_BROKER_CLIENT_ENTRY_CHANGE, entry.encode(), except_uid=uid)
+        await self._safe_send(client, self._connect_reply(v, C.E133_CONNECT_OK, uid, ept=entry.is_ept))
+        await self._send_to_incremental(C.VECTOR_BROKER_CLIENT_ENTRY_CHANGE, entry.encode(), entry.protocol,
+                                        except_client=client)
 
     async def _handle_rpt(self, client: _Client, rpt: P.RptPdu) -> None:
         k = rpt.header
@@ -419,6 +463,42 @@ class RdmnetBroker:
             self.counters["rpt_unknown_vector"] += 1
             await self._status_to(client, k, C.RPT_STATUS_UNKNOWN_VECTOR)
 
+    async def _handle_ept(self, client: _Client, root: P.RootPdu) -> None:
+        """EPT PDU handling (E1.33 9.3): drop malformed, answer unknown vector/CID, forward the rest.
+
+        PDUs for the same destination are forwarded together in one root layer PDU whose
+        sender CID is the originating client (9.3.3); inherited PDUs are sent complete.
+        """
+        if root.cid != client.entry.cid:
+            self.counters["ept_wrong_source"] += 1
+            self._event("ept_dropped", reason="Sender CID does not match the connection", client=client.name)
+            return
+        try:
+            pdus = E.read_ept_pdus(root.data)
+        except P.ProtocolError as error:
+            self.counters["ept_malformed"] += 1
+            self._event("ept_dropped", reason=f"malformed: {error}", client=client.name)
+            return
+        forward: dict[uuid.UUID, list[bytes]] = {}
+        for pdu in pdus:
+            if pdu.vector not in (C.VECTOR_EPT_DATA, C.VECTOR_EPT_STATUS):
+                self.counters["ept_unknown_vector"] += 1
+                await self._ept_status_to(client, E.build_ept_status_unknown_vector(pdu.vector))
+            elif pdu.dest_cid not in self._ept_clients:  # includes the broker's own CID (no EPT protocol)
+                self.counters["ept_unknown_cid"] += 1
+                await self._ept_status_to(client, E.build_ept_status_unknown_cid(pdu.dest_cid))
+            else:
+                forward.setdefault(pdu.dest_cid, []).append(E.build_ept_pdu(pdu.vector, pdu.dest_cid, pdu.data))
+        for cid, parts in forward.items():
+            dest = self._ept_clients.get(cid)
+            if dest and await self._safe_send(dest, dest.connection.send_raw(
+                    E.build_ept_packet(client.entry.cid, b"".join(parts)))):
+                self.counters["ept_forwarded"] += len(parts)
+
+    async def _ept_status_to(self, client: _Client, status: bytes) -> None:
+        pdu = E.build_ept_pdu(C.VECTOR_EPT_STATUS, client.entry.cid, status)
+        await self._safe_send(client, client.connection.send_raw(E.build_ept_packet(self.config.cid, pdu)))
+
     async def _to_broker_responder(self, client: _Client, rpt: P.RptPdu) -> None:
         """RPT request to the broker UID: answered by the broker's own RDM responder (E1.33 6.2)."""
         k = rpt.header
@@ -456,11 +536,11 @@ class RdmnetBroker:
         while True:
             await asyncio.sleep(tick)
             now = time.monotonic()
-            for c in list(self._clients.values()):
+            for c in self._all_clients():
                 v = c.connection
                 if now - v.last_received > self.config.heartbeat_timeout_s:
                     self.counters["heartbeat_timeout"] += 1
-                    self._event("heartbeat_timeout", uid=str(c.uid))
+                    self._event("heartbeat_timeout", client=c.name)
                     await v.close()  # read loop ends, client gets removed
                 elif now - v.last_sent >= self.config.heartbeat_interval_s:
                     await self._safe_send(c, v.send_broker(C.VECTOR_BROKER_NULL))
