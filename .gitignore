@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.venv/
+*.sqlite
+*.jsonl
+livetest_*/
+schreibtest_*/

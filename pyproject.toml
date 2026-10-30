@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyrdmnet"
+version = "0.4.1"
+description = "RDMnet (ANSI E1.33) broker and controller in pure Python"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Stefan Schlagbauer" }]
+requires-python = ">=3.10"
+dependencies = []
+keywords = ["rdmnet", "rdm", "e1.33", "e1.20", "dmx", "lighting", "broker"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: System :: Networking",
+]
+
+[project.optional-dependencies]
+zeroconf = ["zeroconf"]
+
+[project.scripts]
+pyrdmnet = "pyrdmnet.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/Schlagi-Lx/pyrdmnet"
+
+[tool.setuptools]
+packages = ["pyrdmnet"]
