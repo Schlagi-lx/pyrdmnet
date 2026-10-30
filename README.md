@@ -4,8 +4,6 @@
 
 *English: A self-contained RDMnet (ANSI E1.33) broker and controller written in pure Python (standard library only). It discovers RDM devices behind RDMnet gateways, reads device info, personalities and sensors, and can set DMX personality / start address under strict safeguards. Documentation is in German.*
 
-Entstanden im Projekt GelMatch (Vermessung von Scheinwerfern der Veranstaltungstechnik). Das Modul läuft eigenständig und lässt sich über eine synchrone Schnittstelle in andere Programme einbinden.
-
 ## Status
 
 | | |
