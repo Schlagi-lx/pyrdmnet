@@ -161,6 +161,8 @@ Setup: MacBook Pro (macOS 27, Python 3.13), LSS MasterPort 2 firmware v2.13.0028
 | T2 | Successful. The MasterPort reconnects by itself about 16 s after the broker restart (within E1.33 6.2.5) |
 | T3 | LLRP discovery and reading work (also without broker connection). **SET COMPONENT_SCOPE is acknowledged but not applied** – over LLRP the MasterPort shows "portconfig changed" and restarts its network part (no LLRP answer for a few seconds, ACK carries two unexpected data bytes `0x0046`), but keeps the old scope, also after a power cycle; over RDMnet it acknowledges without any effect. SET SEARCH_DOMAIN is acknowledged; the device stores the domain without the final dot. `SUPPORTED_PARAMETERS` is not available via LLRP. The scope has to be changed in the MasterPort's menu. |
 | T4 | Not possible: no second RDMnet device. Covered against two simulated gateways. |
+| T5 | Skipped: the MasterPort shows no IPv6 support and the adapter had only a link-local IPv6 address. |
+| T6 | Successful. Mode 4 "RGB" / start address 101 set, acknowledged and read back (3 channels), then mode 2 "Direct" / address 1 restored and read back (6 channels). |
 | LLRP over IPv6 | On macOS the IPv6 interface must be given explicitly (now derived from `--adapter`). With only a link-local address (fe80::) on the adapter, sending to the LLRP groups `ff18::…` fails with "No route to host": they are not link-local, so the interface needs a global or unique-local IPv6 address (e.g. fd00::10/64). |
 
 Changes in pyrdmnet from these findings: IPv6 interface from the IPv4 adapter; `llrp` reports "not applied" instead

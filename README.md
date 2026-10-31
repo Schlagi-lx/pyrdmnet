@@ -7,8 +7,8 @@ DMX personality and start address under strict safeguards. It runs standalone an
 through a synchronous interface.
 
 > **Coming from 0.4 (German names)?** Version 0.5 is a breaking change: all names (modules, classes, functions, CLI commands and
-> options, database tables and JSON keys) are now English. See [CHANGELOG.md](CHANGELOG.md) and the step-by-step
-> guide [docs/MIGRATING_TO_0.5.md](docs/MIGRATING_TO_0.5.md). Existing SQLite databases are migrated automatically
+> options, database tables and JSON keys) are now English. See [CHANGELOG.md](https://github.com/Schlagi-lx/pyrdmnet/blob/main/CHANGELOG.md) and the step-by-step
+> guide [docs/MIGRATING_TO_0.5.md](https://github.com/Schlagi-lx/pyrdmnet/blob/main/docs/MIGRATING_TO_0.5.md). Existing SQLite databases are migrated automatically
 > when opened (back them up first – the migration is one-way).
 
 ## Status
@@ -16,7 +16,7 @@ through a synchronous interface.
 | | |
 |---|---|
 | Software tests | 238/238 passing on Linux, macOS and Windows (Python 3.10–3.13, standard library only) |
-| Real-world test | with an **LSS MasterPort 2** (firmware 2.13.0028) as RDMnet gateway and an **ETC ColorSource PAR**: broker discovery via mDNS, connection, finding devices, reading, setting mode/start address and reading back (tested with 0.4); with 0.5 also `TCP_COMMS_STATUS`, two controllers at once (fair queuing), reconnection after a broker restart (about 16 s) and LLRP discovery and reading. The MasterPort acknowledges `COMPONENT_SCOPE` SETs (LLRP and RDMnet) but does not apply them – change its scope in its menu. |
+| Real-world test | with an **LSS MasterPort 2** (firmware 2.13.0028) as RDMnet gateway and an **ETC ColorSource PAR**: broker discovery via mDNS, connection, finding devices, reading, setting mode/start address and reading back; with 0.5 also `TCP_COMMS_STATUS`, two controllers at once (fair queuing), reconnection after a broker restart (about 16 s) and LLRP discovery and reading. The MasterPort acknowledges `COMPONENT_SCOPE` SETs (LLRP and RDMnet) but does not apply them – change its scope in its menu. |
 | Other gateways/devices | not tested – feedback welcome |
 
 No E1.33 conformance testing, no certification. Use at your own risk (see license).
@@ -82,13 +82,20 @@ module = RdmModule(RdmConfig(broker_host=adapter_ip, write_policy=WritePolicy.la
 Requires Python 3.10 or later. No further packages needed.
 
 ```bash
+pip install pyrdmnet               # optionally with mDNS via zeroconf: pip install "pyrdmnet[zeroconf]"
+pyrdmnet demo                      # offline run with the simulator (same as: python3 -m pyrdmnet demo)
+```
+
+From source, with the tests:
+
+```bash
 git clone https://github.com/Schlagi-lx/pyrdmnet.git
 cd pyrdmnet
 python3 -m unittest discover -s tests -t tests   # tests
 python3 -m pyrdmnet demo                        # offline run with the simulator
 ```
 
-Or install as a package: `pip install .` (optionally with mDNS via zeroconf: `pip install ".[zeroconf]"`).
+Or install the checkout as a package: `pip install .`
 
 ### Commands
 
@@ -205,4 +212,4 @@ A mode change requires a confirmed mapping RDM personality ↔ mode (per model a
 
 ## License
 
-MIT – see [LICENSE](LICENSE).
+MIT – see [LICENSE](https://github.com/Schlagi-lx/pyrdmnet/blob/main/LICENSE).
