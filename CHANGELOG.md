@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- LLRP over IPv6 picks the IPv6 interface from the IPv4 adapter (`--adapter`) when `interface6` is not given. Found in
+  the hardware test on macOS, where joining the IPv6 group without an interface fails ("Can't assign requested
+  address"). Adapter detection moved to the new module `netif.py` (`interface_for_ipv4`, `interface_index_for_ipv4`).
 - Live test: additional checks with `--checks` (default `comms,controllers`; `all`, `none`): `TCP_COMMS_STATUS` of
   every gateway, two controllers at once on one fixture (fair queuing), LLRP discovery with scope and search domain
   (read only), broker restart with the reconnection time of every gateway. Results in `result.json` (`checks`) and

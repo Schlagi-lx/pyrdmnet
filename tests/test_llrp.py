@@ -346,6 +346,19 @@ class TestFamilies(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await LlrpManager(LlrpNetwork(ipv4=False, ipv6=False)).start()
 
+    def test_ipv6_interface_from_ipv4_adapter(self):
+        from pyrdmnet import netif
+        adapters = [("lo0", "127.0.0.1"), ("en5", "192.168.10.132")]
+        with mock.patch.object(netif, "network_adapters", return_value=adapters), \
+                mock.patch.object(netif.socket, "if_nametoindex", side_effect=lambda name: {"en5": 14}[name]):
+            self.assertEqual(netif.interface_for_ipv4("192.168.10.132"), "en5")
+            self.assertEqual(netif.interface_index_for_ipv4("192.168.10.132"), 14)
+            self.assertEqual(netif.interface_index_for_ipv4("10.0.0.1"), 0)  # not on this computer
+            self.assertEqual(netif.interface_index_for_ipv4("0.0.0.0"), 0)  # system default
+        with mock.patch.object(netif, "network_adapters", return_value=[("Ethernet 2", "192.168.10.132")]), \
+                mock.patch.object(netif.socket, "if_nametoindex", side_effect=OSError):
+            self.assertEqual(netif.interface_index_for_ipv4("192.168.10.132"), 0)  # Windows adapter names
+
     def test_defaults(self):
         self.assertTrue(LlrpNetwork().use_ipv6)  # multicast: IPv4 and IPv6 (E1.33 5.3.2)
         self.assertFalse(LlrpNetwork(multicast=False).use_ipv6)  # unicast needs explicit IPv6 addresses
