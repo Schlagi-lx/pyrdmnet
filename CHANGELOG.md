@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Developer guide [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md): workflow, releases, hardware tests.
+
 ## 0.5.0 – 2026-10-31
 
 **Breaking change: the whole project is now in English.** Code that uses pyrdmnet 0.4 has to be adapted; there
