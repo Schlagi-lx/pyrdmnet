@@ -27,8 +27,8 @@ compatibility aliases**:
 
 ## Steps
 
-1. **Add pyrdmnet 0.5 as a dependency** (e.g. `pip install git+https://github.com/Schlagi-lx/pyrdmnet@<tag or commit>`),
-   pinned to a tag or commit so later changes in this repository arrive only when wanted.
+1. **Add pyrdmnet 0.5 as a dependency**, pinned so later changes arrive only when wanted: `pyrdmnet==0.5.0` from
+   PyPI (`pip install pyrdmnet==0.5.0`), or from GitHub `pip install git+https://github.com/Schlagi-lx/pyrdmnet@v0.5.0`.
 2. **Back up existing databases.** If a database already contains `rdm_*` tables written by the original German
    module, pyrdmnet 0.5 migrates it to schema 2 in place the first time it is opened (`RdmStore`, `RdmConfig.db`).
    The migration is one-way: **the German version cannot open a migrated database.** Copy such files first.

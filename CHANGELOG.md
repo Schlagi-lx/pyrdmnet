@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 – 2026-10-31
+
+**Breaking change: the whole project is now in English.** Code that uses pyrdmnet 0.4 has to be adapted; there
+are no German aliases.
+
+### New since 0.4
 
 - From the hardware test with the LSS MasterPort 2 ([findings](docs/HARDWARE_TESTS.md#findings-2026-10-31)):
   - `LlrpManager.set_scope` / `set_search_domain` keep reading back for `readback_wait_s` (15 s) - devices may
@@ -98,10 +103,8 @@
   values and runs in about 30 s instead of about 100 s.
 - `ClientEntry` carries EPT sub-protocols (`ept_protocols`, `ClientEntry.ept()`); `type_text` is "EPT" for them.
 
-## 0.5.0
-
-**Breaking change: the whole project is now in English.** Code that uses pyrdmnet 0.4 has to be adapted; there
-are no German aliases.
+- Tested on hardware with an LSS MasterPort 2 and an ETC ColorSource PAR ([results](https://github.com/Schlagi-lx/pyrdmnet/blob/main/docs/HARDWARE_TESTS.md#findings-2026-10-31)).
+- Published on PyPI: `pip install pyrdmnet`.
 
 ### Renamed
 
