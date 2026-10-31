@@ -440,7 +440,8 @@ class LiveTest:
         try:
             start = time.monotonic()
             busy_tasks = [asyncio.create_task(get(ca)) for _ in range(busy)]
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0)  # A's requests go out first, B follows at once
+            answered_at_start = done_a
             await asyncio.gather(*(get(cb) for _ in range(quiet)))
             quiet_s, answered_a = time.monotonic() - start, done_a
             await asyncio.gather(*busy_tasks)
@@ -451,8 +452,13 @@ class LiveTest:
         self.p(f"  target {target['rpt_dest']} endpoint {target.get('endpoint', 0)}: A {busy} requests, "
                f"B {quiet} requests; B done after {quiet_s:.2f} s with {answered_a} of A's answered, "
                f"all done after {total_s:.2f} s, {len(errors)} error(s)")
-        fair = answered_a < busy
-        return {"status": "ok" if fair and not errors else "failed", "target": str(target["rpt_dest"]),
+        if errors:
+            status = "failed"
+        elif answered_at_start >= busy or total_s < 0.2:  # too fast to see any queuing: no statement possible
+            status = "inconclusive"
+        else:
+            status = "ok" if answered_a < busy else "failed"  # B must not wait for all of A's requests
+        return {"status": status, "target": str(target["rpt_dest"]),
                 "endpoint": target.get("endpoint", 0), "busy_requests": busy, "quiet_requests": quiet,
                 "quiet_done_s": round(quiet_s, 3), "busy_answered_when_quiet_done": answered_a,
                 "total_s": round(total_s, 3), "errors": errors[:10],

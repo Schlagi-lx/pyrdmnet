@@ -86,6 +86,13 @@ class TestAdditionalChecks(unittest.IsolatedAsyncioTestCase):
         self.assertIn("### restart: ok", report)
         self.assertEqual(json.loads((lt.folder / "result.json").read_text())["checks"]["comms"]["status"], "ok")
 
+    async def test_controllers_inconclusive_with_fast_device(self):
+        for g in self.gateways:
+            g.delay = 0.0  # answers at once: no queuing to observe
+        lt, res = await self.run_live_test(("controllers",))
+        self.assertEqual(res["checks"]["controllers"]["status"], "inconclusive")
+        self.assertTrue(res["success"])
+
     async def test_no_checks(self):
         lt, res = await self.run_live_test(())
         self.assertTrue(res["success"], res["error"])

@@ -54,7 +54,7 @@ python3 -m pyrdmnet livetest --host 192.168.1.10 --checks comms,controllers,llrp
 | MasterPort connects within a few seconds ("CONNECTED: Device ...") | Read the hints at the end; usually scope, firewall or mDNS. Retry with `--no-mdns` and a static broker in the MasterPort. |
 | Gateway, ports and fixture are read; report "SUCCESSFUL" | Note what is missing ("unavailable: ..."); the folder has the details |
 | `comms: OK` – scope `default`, broker = computer IP:8888 | `not supported` is a finding, not an error: the MasterPort does not implement the PID required for devices |
-| `controllers: OK` – B done long before all of A's 20 requests | Note `requests_per_s` and `quiet_done_s` from the report |
+| `controllers: OK` – B done long before all of A's 20 requests | Note `requests_per_s` and `quiet_done_s` from the report. `inconclusive`: the device answered too fast to see any queuing (fine) |
 | `llrp: OK` – MasterPort found via LLRP with scope `default` | `not supported`: no LLRP answer – check UDP 5569 in the firewall; retry with T3 |
 
 ## T2 – Broker restart

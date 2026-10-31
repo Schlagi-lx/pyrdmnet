@@ -15,7 +15,7 @@ through a synchronous interface.
 
 | | |
 |---|---|
-| Software tests | 232/232 passing on Linux, macOS and Windows (Python 3.10–3.13, standard library only) |
+| Software tests | 233/233 passing on Linux, macOS and Windows (Python 3.10–3.13, standard library only) |
 | Real-world test | with an **LSS MasterPort 2** (firmware 2.13) as RDMnet gateway and an **ETC ColorSource PAR**: broker discovery via mDNS, connection, finding devices, reading, setting mode/start address and reading back (tested with 0.4) |
 | Other gateways/devices | not tested – feedback welcome |
 
