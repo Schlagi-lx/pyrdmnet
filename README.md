@@ -15,8 +15,8 @@ through a synchronous interface.
 
 | | |
 |---|---|
-| Software tests | 235/235 passing on Linux, macOS and Windows (Python 3.10–3.13, standard library only) |
-| Real-world test | with an **LSS MasterPort 2** (firmware 2.13) as RDMnet gateway and an **ETC ColorSource PAR**: broker discovery via mDNS, connection, finding devices, reading, setting mode/start address and reading back (tested with 0.4) |
+| Software tests | 238/238 passing on Linux, macOS and Windows (Python 3.10–3.13, standard library only) |
+| Real-world test | with an **LSS MasterPort 2** (firmware 2.13.0028) as RDMnet gateway and an **ETC ColorSource PAR**: broker discovery via mDNS, connection, finding devices, reading, setting mode/start address and reading back (tested with 0.4); with 0.5 also `TCP_COMMS_STATUS`, two controllers at once (fair queuing), reconnection after a broker restart (about 16 s) and LLRP discovery and reading. The MasterPort acknowledges `COMPONENT_SCOPE` SETs (LLRP and RDMnet) but does not apply them – change its scope in its menu. |
 | Other gateways/devices | not tested – feedback welcome |
 
 No E1.33 conformance testing, no certification. Use at your own risk (see license).

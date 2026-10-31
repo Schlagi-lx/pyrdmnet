@@ -21,6 +21,7 @@ set. The target reports ``uuid.getnode()`` as its hardware address.
 from __future__ import annotations
 
 import asyncio
+import errno
 import ipaddress
 import logging
 import random
@@ -44,6 +45,15 @@ log = logging.getLogger("pyrdmnet.llrp")
 BROADCAST_CID = uuid.UUID(C.LLRP_BROADCAST_CID)
 UID_MIN, UID_MAX = 0, (1 << 48) - 1
 DUPLICATE_WINDOW_S = 2 * C.LLRP_TIMEOUT_S  # same request received over IPv4 and IPv6
+
+
+class RdmNotAppliedError(RdmResponseError):
+    """The device acknowledged a SET, but reading back shows the old value (it did not apply it)."""
+
+    def __init__(self, parameter: str, wanted: str, read_back: str):
+        self.parameter, self.wanted, self.read_back = parameter, wanted, read_back
+        super().__init__(f"{parameter}: the device acknowledged {wanted}, but reads back {read_back} - "
+                         "it did not apply the change")
 
 
 # ------------------------------------------------------------------- Encoding
@@ -189,6 +199,13 @@ def interface_index(interface: int | str) -> int:
         raise OSError(f"Unknown network interface {interface!r}") from error
 
 
+def ipv6_interface(network: LlrpNetwork) -> int:
+    """IPv6 interface index: ``interface6``, else the adapter with the IPv4 address ``adapter`` (macOS needs
+    an explicit interface), else 0 (system default)."""
+    index = interface_index(network.interface6)
+    return index or interface_index_for_ipv4(network.adapter)
+
+
 def _reuse(s: socket.socket) -> None:
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     if hasattr(socket, "SO_REUSEPORT"):
@@ -238,9 +255,7 @@ def _udp_socket6(network: LlrpNetwork, port: int, group: str) -> socket.socket:
         _reuse(s)
         s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)  # IPv4 has its own socket
         if network.multicast:
-            index = interface_index(network.interface6)
-            if index == 0:  # macOS needs an explicit interface: the one with the IPv4 address of ``adapter``
-                index = interface_index_for_ipv4(network.adapter)
+            index = ipv6_interface(network)
             s.bind(("::", port))
             join = getattr(socket, "IPV6_JOIN_GROUP", None) or socket.IPV6_ADD_MEMBERSHIP
             s.setsockopt(socket.IPPROTO_IPV6, join, socket.inet_pton(socket.AF_INET6, group) + struct.pack("@I", index))
@@ -273,7 +288,11 @@ class _Protocol(asyncio.DatagramProtocol):
     def error_received(self, error: Exception) -> None:  # e.g. no route for one address family
         if not self.warned:  # once per socket: visible, but no flood on every probe round
             self.warned = True
-            log.warning("LLRP over %s: send/receive error: %s", self.family, error)
+            hint = ""
+            if self.family == "IPv6" and getattr(error, "errno", None) in (errno.EHOSTUNREACH, errno.ENETUNREACH):
+                hint = (" - the interface needs a global or unique-local IPv6 address (e.g. fd00::10/64): the LLRP"
+                        " groups ff18::... are not link-local, so a link-local fe80:: address is not enough")
+            log.warning("LLRP over %s: send/receive error: %s%s", self.family, error, hint)
         else:
             log.debug("LLRP over %s: send/receive error: %s", self.family, error)
 
@@ -286,6 +305,7 @@ class _Channel:
     transport: asyncio.DatagramTransport
     request: tuple
     response: tuple
+    where: str = ""  # adapter or interface, for messages
 
     def send(self, data: bytes, destination: tuple) -> None:
         self.transport.sendto(data, destination)
@@ -318,13 +338,32 @@ async def _open_channels(network: LlrpNetwork, listen: str,
         # IPv6 destinations as 4-tuples: the Windows proactor loop treats a 2-tuple as IPv4
         tail = (0, 0) if family == "IPv6" else ()
         channel = _Channel(family, None, (request, network.request_port, *tail),
-                           (response, network.response_port, *tail))
+                           (response, network.response_port, *tail), _where(network, family))
         channel.transport, _ = await loop.create_datagram_endpoint(
             lambda c=channel: _Protocol(lambda data, addr: on_receive(data, addr, c), c.family), sock=sock)
         channels.append(channel)
     if not channels:
         raise errors[0]
     return channels
+
+
+def _where(network: LlrpNetwork, family: str) -> str:
+    if family == "IPv4":
+        return network.adapter if network.multicast else f"unicast {network.adapter}"
+    if not network.multicast:
+        return f"unicast {network.adapter6}"
+    index = ipv6_interface(network)
+    if not index:
+        return "default interface"
+    try:
+        return socket.if_indextoname(index)
+    except (OSError, AttributeError):
+        return f"interface {index}"
+
+
+def describe_channels(channels: list) -> str:
+    """e.g. ``IPv4 (192.168.10.132) + IPv6 (en7)``."""
+    return " + ".join(f"{c.family} ({c.where})" for c in channels)
 
 
 def _close_channels(channels: list[_Channel]) -> None:
@@ -372,6 +411,7 @@ class LlrpManager:
         self.retries = retries
         self.write_enabled = False
         self.write_policy = write_policy or WritePolicy()
+        self.readback_wait_s = 15.0  # after a SET: how long to keep reading back until the new value shows
         self.protocol: list[dict] = []  # changes old -> new
         self._tn = 0
         self._rdm_tn = TransactionCounter()
@@ -530,21 +570,45 @@ class LlrpManager:
             else:
                 new.static_type, new.static_ipv4 = C.E133_STATIC_CONFIG_IPV4, str(address)
         await self.rdm_set(target, C.PID_COMPONENT_SCOPE, R.build_component_scope(new))
-        read_back = await self.read_scope(target)
+        wanted = (new.scope, new.static_address)
+        read_back = await self._read_back(lambda: self.read_scope(target),
+                                          lambda cs: (cs.scope, cs.static_address) == wanted)
         self._log_change(target, "COMPONENT_SCOPE", (old.scope, old.static_address),
-                             (read_back.scope, read_back.static_address))
-        if (read_back.scope, read_back.static_address) != (new.scope, new.static_address):
-            raise RdmResponseError(f"Read-back mismatch: {read_back.scope!r} / {read_back.static_address}")
+                         (read_back.scope, read_back.static_address))
+        if (read_back.scope, read_back.static_address) != wanted:
+            raise RdmNotAppliedError("COMPONENT_SCOPE", f"{new.scope!r} / {new.static_address or 'mDNS'}",
+                                     f"{read_back.scope!r} / {read_back.static_address or 'mDNS'}")
         return old, read_back
 
     async def set_search_domain(self, target: DiscoveredTarget, domain: str) -> tuple[str, str]:
         old = await self.read_search_domain(target)
         await self.rdm_set(target, C.PID_SEARCH_DOMAIN, domain.encode("utf-8")[:C.E133_DOMAIN_LENGTH])
-        read_back = await self.read_search_domain(target)
+        same = lambda d: d.rstrip(".") == domain.rstrip(".")  # noqa: E731 - some devices drop the final dot
+        read_back = await self._read_back(lambda: self.read_search_domain(target), same)
         self._log_change(target, "SEARCH_DOMAIN", old, read_back)
-        if read_back != domain:
-            raise RdmResponseError(f"Read-back mismatch: {read_back!r}")
+        if not same(read_back):
+            raise RdmNotAppliedError("SEARCH_DOMAIN", repr(domain), repr(read_back))
         return old, read_back
+
+    async def _read_back(self, read, matches):
+        """Read back after a SET. Devices may restart their network part after a configuration change
+        (no answer for a few seconds) or apply it with a delay: retry for ``readback_wait_s``."""
+        loop = asyncio.get_running_loop()
+        end = loop.time() + self.readback_wait_s
+        value, error = None, None
+        while True:
+            try:
+                value, error = await read(), None
+                if matches(value):
+                    return value
+            except RdmTimeoutError as f:  # e.g. restarting after "config changed"
+                error = f
+            if loop.time() >= end:
+                break
+            await asyncio.sleep(1.0)
+        if value is None:
+            raise error
+        return value
 
     def _log_change(self, target: DiscoveredTarget, parameter: str, old, new) -> None:
         entry = {"uid": str(target.uid), "cid": str(target.cid), "parameter": parameter, "old": old, "new": new}

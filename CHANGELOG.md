@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- From the hardware test with the LSS MasterPort 2 ([findings](docs/HARDWARE_TESTS.md#findings-2026-10-31)):
+  - `LlrpManager.set_scope` / `set_search_domain` keep reading back for `readback_wait_s` (15 s) - devices may
+    restart their network part after a configuration change - and raise `RdmNotAppliedError` if the device
+    acknowledged the SET but still reports the old value. The `llrp` command reports this instead of a traceback.
+  - Search domains are compared without the final dot (`local.` = `local`).
+  - LLRP over IPv6: a clearer warning when the interface has only a link-local address; messages name the adapter
+    and IPv6 interface in use (`describe_channels`).
+  - The command line turns SIGTERM into a normal stop, so a killed `broker --dnssd` removes its mDNS registration.
 - LLRP over IPv6 picks the IPv6 interface from the IPv4 adapter (`--adapter`) when `interface6` is not given. Found in
   the hardware test on macOS, where joining the IPv6 group without an interface fails ("Can't assign requested
   address"). Adapter detection moved to the new module `netif.py` (`interface_for_ipv4`, `interface_index_for_ipv4`).

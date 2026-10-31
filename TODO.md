@@ -8,7 +8,8 @@
 - [x] 3. LLRP: find gateways without a broker, set scope/broker address
       - [x] 3a. LLRP over IPv6 (E1.33 requires IPv4 and IPv6 for the manager)
       - [x] 3b. Simulator gateway as LLRP target (`simulator --llrp`, wrong scope fixed via LLRP)
-      - [ ] 3c. Real-world LLRP test with the MasterPort (hardware, [test T3](docs/HARDWARE_TESTS.md))
+      - [x] 3c. Real-world LLRP test with the MasterPort: discovery and reading work; it acknowledges but does not
+            apply SET COMPONENT_SCOPE (firmware 2.13.0028) – see [findings](docs/HARDWARE_TESTS.md#findings-2026-10-31)
 - [x] 4. PDU inheritance – per E1.33 4.1.1 only allowed for EPT, done as part of 5
 - [x] 5. EPT in the broker: EPT clients, client list, forwarding (incl. inheritance), Unknown CID/Vector status
 - [x] 6. One broker per scope (9.1.4): STANDBY at start-up while another broker holds the scope, monitoring,
@@ -22,7 +23,8 @@
 ## Robustness in real-world use
 
 - [x] 7. Automatic reconnection after a broker restart (6.2.5 back-off, Client Redirect IPv4), facade waits
-- [ ] 8. Test several gateways at once (a second device next to the MasterPort) – [test T4](docs/HARDWARE_TESTS.md)
+- [-] 8. ~~Test several gateways at once (a second device next to the MasterPort)~~ – dropped: no second device;
+      covered against two simulated gateways (`tests/test_live_checks.py`)
 - [-] 9. ~~Test more gateways/devices, compatibility list in the README~~ – dropped: no further hardware available
 - [x] 9b. Revise the restrictive SET settings: `WritePolicy` – default any PID after the per-session permission,
       `WritePolicy.lab()` / `llrp_lab()` keep the old lists, permission can be switched off, discovery stays blocked

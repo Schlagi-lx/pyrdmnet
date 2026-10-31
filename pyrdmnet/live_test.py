@@ -403,11 +403,11 @@ class LiveTest:
 
     async def _check_llrp(self) -> dict:
         """Find the gateways via LLRP (also connected ones) and read scope and search domain (read only)."""
-        from .llrp import LlrpManager, LlrpNetwork
+        from .llrp import LlrpManager, LlrpNetwork, describe_channels
         rdmnet = {g["rdm_uid"] for g in self.result["gateways"]}
         found = []
         async with LlrpManager(self.k.llrp_network or LlrpNetwork(adapter=self.k.host)) as m:
-            self.p(f"  LLRP via {' + '.join(m.families)}")
+            self.p(f"  LLRP via {describe_channels(m.channels)}")
             for z in await m.discover(filter=0):
                 entry = {"uid": str(z.uid), "cid": str(z.cid), "type": z.type_text, "address": z.address,
                          "hardware": z.hardware_text, "rdmnet_gateway": str(z.uid) in rdmnet}

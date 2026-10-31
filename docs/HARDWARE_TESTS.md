@@ -149,3 +149,21 @@ python3 -m pyrdmnet writetest --host 192.168.1.10 --target-mode 2 --target-addre
 
 The checks of T1, T2 and T4 run against two simulated gateways in `tests/test_live_checks.py`. The T3 flow can be
 tried with the simulator, see the LLRP walkthrough in the README.
+
+## Findings 2026-10-31
+
+Setup: MacBook Pro (macOS 27, Python 3.13), LSS MasterPort 2 firmware v2.13.0028, ETC ColorSource Par CPU3 (firmware
+4.0.1.34) on port 1, mDNS discovery, scope `default`.
+
+| Test | Result |
+|---|---|
+| T1 | Successful. Gateway and fixture read; `TCP_COMMS_STATUS` supported (0 unhealthy events); two controllers: B done after 9 of A's 20 requests, about 34 RDM requests/s to the fixture; LLRP discovery and reading over IPv4 |
+| T2 | Successful. The MasterPort reconnects by itself about 16 s after the broker restart (within E1.33 6.2.5) |
+| T3 | LLRP discovery and reading work (also without broker connection). **SET COMPONENT_SCOPE is acknowledged but not applied** – over LLRP the MasterPort shows "portconfig changed" and restarts its network part (no LLRP answer for a few seconds, ACK carries two unexpected data bytes `0x0046`), but keeps the old scope, also after a power cycle; over RDMnet it acknowledges without any effect. SET SEARCH_DOMAIN is acknowledged; the device stores the domain without the final dot. `SUPPORTED_PARAMETERS` is not available via LLRP. The scope has to be changed in the MasterPort's menu. |
+| T4 | Not possible: no second RDMnet device. Covered against two simulated gateways. |
+| LLRP over IPv6 | On macOS the IPv6 interface must be given explicitly (now derived from `--adapter`). With only a link-local address (fe80::) on the adapter, sending to the LLRP groups `ff18::…` fails with "No route to host": they are not link-local, so the interface needs a global or unique-local IPv6 address (e.g. fd00::10/64). |
+
+Changes in pyrdmnet from these findings: IPv6 interface from the IPv4 adapter; `llrp` reports "not applied" instead
+of a traceback and keeps reading back for up to 15 s (devices that restart after a configuration change); search
+domains are compared without the final dot; brokers stopped with SIGTERM remove their mDNS registration; the
+two-controller check rates very fast devices as `inconclusive`.
