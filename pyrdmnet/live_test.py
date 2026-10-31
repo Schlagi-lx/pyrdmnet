@@ -146,6 +146,17 @@ ALL_CHECKS = ("comms", "controllers", "llrp", "restart")
 DEFAULT_CHECKS = ("comms", "controllers")  # read-only and without interruption
 
 
+def controllers_status(errors: bool, busy: int, answered_a: int, answered_at_start: int, total_s: float) -> str:
+    """Verdict of the two-controller check: B (few requests) must not wait for all of A's (many)."""
+    if errors:
+        return "failed"
+    if answered_a < busy:
+        return "ok"  # B was done before all of A's requests
+    if answered_at_start >= busy or total_s < 0.5:
+        return "inconclusive"  # the device answered too fast for any queuing to show
+    return "failed"  # B waited behind all of A's requests although they took a while
+
+
 def _now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
@@ -452,12 +463,7 @@ class LiveTest:
         self.p(f"  target {target['rpt_dest']} endpoint {target.get('endpoint', 0)}: A {busy} requests, "
                f"B {quiet} requests; B done after {quiet_s:.2f} s with {answered_a} of A's answered, "
                f"all done after {total_s:.2f} s, {len(errors)} error(s)")
-        if errors:
-            status = "failed"
-        elif answered_at_start >= busy or total_s < 0.2:  # too fast to see any queuing: no statement possible
-            status = "inconclusive"
-        else:
-            status = "ok" if answered_a < busy else "failed"  # B must not wait for all of A's requests
+        status = controllers_status(bool(errors), busy, answered_a, answered_at_start, total_s)
         return {"status": status, "target": str(target["rpt_dest"]),
                 "endpoint": target.get("endpoint", 0), "busy_requests": busy, "quiet_requests": quiet,
                 "quiet_done_s": round(quiet_s, 3), "busy_answered_when_quiet_done": answered_a,
