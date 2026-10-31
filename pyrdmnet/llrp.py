@@ -35,6 +35,7 @@ from typing import Callable
 from . import constants as C
 from . import pdu as P
 from . import rdm_params as R
+from .netif import interface_index_for_ipv4
 from .controller import RdmNackError, RdmResponseError, RdmTimeoutError, WriteLockError, WritePolicy
 from .rdm import RdmFormatError, RdmMessage, TransactionCounter, Uid
 
@@ -165,7 +166,7 @@ class LlrpNetwork:
     ttl: int = 1  # >1: replies may come from other network segments (E1.33 5.3.3)
     ipv4: bool = True
     ipv6: bool | None = None  # None: with multicast yes, with unicast no (needs explicit addresses)
-    interface6: int | str = 0  # IPv6 interface: index or name (e.g. "eth0"); 0 = system default
+    interface6: int | str = 0  # IPv6 interface: index or name ("eth0"); 0 = the one of ``adapter``, else default
     request_addr6: str = C.LLRP_IPV6_REQUEST
     response_addr6: str = C.LLRP_IPV6_RESPONSE
     adapter6: str = "::"  # unicast only: local IPv6 address to bind to
@@ -238,6 +239,8 @@ def _udp_socket6(network: LlrpNetwork, port: int, group: str) -> socket.socket:
         s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)  # IPv4 has its own socket
         if network.multicast:
             index = interface_index(network.interface6)
+            if index == 0:  # macOS needs an explicit interface: the one with the IPv4 address of ``adapter``
+                index = interface_index_for_ipv4(network.adapter)
             s.bind(("::", port))
             join = getattr(socket, "IPV6_JOIN_GROUP", None) or socket.IPV6_ADD_MEMBERSHIP
             s.setsockopt(socket.IPPROTO_IPV6, join, socket.inet_pton(socket.AF_INET6, group) + struct.pack("@I", index))
