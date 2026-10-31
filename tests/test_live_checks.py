@@ -86,6 +86,14 @@ class TestAdditionalChecks(unittest.IsolatedAsyncioTestCase):
         self.assertIn("### restart: ok", report)
         self.assertEqual(json.loads((lt.folder / "result.json").read_text())["checks"]["comms"]["status"], "ok")
 
+    async def test_controllers_inconclusive_with_fast_device(self):
+        for g in self.gateways:
+            g.delay = 0.0  # answers at once: no queuing to observe
+        lt, res = await self.run_live_test(("controllers",))
+        self.assertIn(res["checks"]["controllers"]["status"], ("ok", "inconclusive"))  # never a false "failed"
+        self.assertTrue(res["success"])
+
+
     async def test_no_checks(self):
         lt, res = await self.run_live_test(())
         self.assertTrue(res["success"], res["error"])
@@ -105,6 +113,16 @@ class TestAdditionalChecks(unittest.IsolatedAsyncioTestCase):
         lt, res = await self.run_live_test(("comms",))
         self.assertTrue(res["success"])  # the main live test still succeeds
         self.assertEqual(res["checks"]["comms"]["status"], "not supported")
+
+
+class TestControllersVerdict(unittest.TestCase):
+    def test_rules(self):
+        from pyrdmnet.live_test import controllers_status as v
+        self.assertEqual(v(False, 20, 9, 0, 0.15), "ok")  # B done after 9 of A's 20, however fast
+        self.assertEqual(v(True, 20, 9, 0, 1.0), "failed")  # errors
+        self.assertEqual(v(False, 20, 20, 0, 0.05), "inconclusive")  # all in 50 ms: nothing to see
+        self.assertEqual(v(False, 20, 20, 20, 2.0), "inconclusive")  # A was done before B started
+        self.assertEqual(v(False, 20, 20, 0, 2.0), "failed")  # B waited behind all of A's
 
 
 class TestCli(unittest.TestCase):

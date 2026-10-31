@@ -146,6 +146,17 @@ ALL_CHECKS = ("comms", "controllers", "llrp", "restart")
 DEFAULT_CHECKS = ("comms", "controllers")  # read-only and without interruption
 
 
+def controllers_status(errors: bool, busy: int, answered_a: int, answered_at_start: int, total_s: float) -> str:
+    """Verdict of the two-controller check: B (few requests) must not wait for all of A's (many)."""
+    if errors:
+        return "failed"
+    if answered_a < busy:
+        return "ok"  # B was done before all of A's requests
+    if answered_at_start >= busy or total_s < 0.5:
+        return "inconclusive"  # the device answered too fast for any queuing to show
+    return "failed"  # B waited behind all of A's requests although they took a while
+
+
 def _now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
@@ -440,7 +451,8 @@ class LiveTest:
         try:
             start = time.monotonic()
             busy_tasks = [asyncio.create_task(get(ca)) for _ in range(busy)]
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0)  # A's requests go out first, B follows at once
+            answered_at_start = done_a
             await asyncio.gather(*(get(cb) for _ in range(quiet)))
             quiet_s, answered_a = time.monotonic() - start, done_a
             await asyncio.gather(*busy_tasks)
@@ -451,8 +463,8 @@ class LiveTest:
         self.p(f"  target {target['rpt_dest']} endpoint {target.get('endpoint', 0)}: A {busy} requests, "
                f"B {quiet} requests; B done after {quiet_s:.2f} s with {answered_a} of A's answered, "
                f"all done after {total_s:.2f} s, {len(errors)} error(s)")
-        fair = answered_a < busy
-        return {"status": "ok" if fair and not errors else "failed", "target": str(target["rpt_dest"]),
+        status = controllers_status(bool(errors), busy, answered_a, answered_at_start, total_s)
+        return {"status": status, "target": str(target["rpt_dest"]),
                 "endpoint": target.get("endpoint", 0), "busy_requests": busy, "quiet_requests": quiet,
                 "quiet_done_s": round(quiet_s, 3), "busy_answered_when_quiet_done": answered_a,
                 "total_s": round(total_s, 3), "errors": errors[:10],
