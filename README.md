@@ -197,6 +197,9 @@ A mode change requires a confirmed mapping RDM personality ↔ mode (per model a
 | `llrp.py` | LLRP manager and target |
 | `ept.py` | EPT PDUs (with inheritance), EPT client |
 | `simulator.py`, `live_test.py`, `write_test.py`, `__main__.py` | simulator, tools, command line |
+| `netif.py` | network adapters of the computer (names, IPv4 addresses) |
+
+Development workflow, releases and hardware tests: [docs/DEVELOPMENT.md](https://github.com/Schlagi-lx/pyrdmnet/blob/main/docs/DEVELOPMENT.md).
 
 ## Notes
 
