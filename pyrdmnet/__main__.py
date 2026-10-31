@@ -71,9 +71,9 @@ async def _simulator(args) -> None:
         await g.disconnected.wait()
         print("Disconnected:", g.disconnect_reason)
         return
-    from .llrp import LlrpNetwork
+    from .llrp import LlrpNetwork, describe_channels
     target = await g.start_llrp(LlrpNetwork(adapter=args.adapter, interface6=args.interface6))
-    print(f"Simulator {g.requested_uid} ({kind}) answers LLRP via {' + '.join(target.families)}, "
+    print(f"Simulator {g.requested_uid} ({kind}) answers LLRP via {describe_channels(target.channels)}, "
           f"scope \"{g.scope}\". Ctrl+C to quit.")
 
     def show(connected: bool, text: str) -> None:
@@ -189,8 +189,8 @@ async def _llrp(args) -> int:
     set_param = args.scope or args.domain
     async with LlrpManager(network) as m:
         filt = 0 if args.all else C.LLRP_FILTER_CLIENT_CONN_INACTIVE
-        via = " + ".join(f"{f} ({args.adapter if f == 'IPv4' else f'interface {args.interface6}'})"
-                         for f in m.families)
+        from .llrp import describe_channels
+        via = describe_channels(m.channels)
         print(f"LLRP discovery via {via} ({'all' if args.all else 'only without broker connection'}) ...")
         targets = await m.discover(filter=filt)
         if args.uid:
@@ -233,13 +233,23 @@ async def _llrp(args) -> int:
                 print("Aborted, nothing changed.")
                 return 1
         m.write_enabled = True
-        if args.scope:
-            old, new = await m.set_scope(z, args.scope, broker)
-            print(f"  Scope: \"{old.scope}\" -> \"{new.scope}\" (read back), broker: "
-                  f"{old.static_address or 'mDNS'} -> {new.static_address or 'mDNS'}")
-        if args.domain:
-            old_d, new_d = await m.set_search_domain(z, args.domain)
-            print(f"  Search domain: {old_d} -> {new_d} (read back)")
+        from .controller import RdmError
+        from .llrp import RdmNotAppliedError
+        try:
+            if args.scope:
+                old, new = await m.set_scope(z, args.scope, broker)
+                print(f"  Scope: \"{old.scope}\" -> \"{new.scope}\" (read back), broker: "
+                      f"{old.static_address or 'mDNS'} -> {new.static_address or 'mDNS'}")
+            if args.domain:
+                old_d, new_d = await m.set_search_domain(z, args.domain)
+                print(f"  Search domain: {old_d} -> {new_d} (read back)")
+        except RdmNotAppliedError as f:
+            print(f"  NOT APPLIED: {f}.")
+            print("  Change the setting on the device itself (menu / web interface).")
+            return 1
+        except RdmError as f:
+            print(f"  FAILED: {f}")
+            return 1
     return 0
 
 
@@ -320,7 +330,16 @@ def _demo(args) -> int:
     return 0
 
 
+def _terminate(signum, frame):
+    raise KeyboardInterrupt  # like Ctrl+C: finally blocks stop brokers and remove mDNS registrations
+
+
 def main(argv: list[str] | None = None) -> int:
+    import signal
+    try:
+        signal.signal(signal.SIGTERM, _terminate)
+    except (AttributeError, ValueError):  # no SIGTERM, or not the main thread
+        pass
     ap = argparse.ArgumentParser(prog="python3 -m pyrdmnet", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--version", action="version", version=__version__)

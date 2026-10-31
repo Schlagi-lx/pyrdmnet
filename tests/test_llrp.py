@@ -14,7 +14,8 @@ from pyrdmnet import pdu as P
 from pyrdmnet import rdm_params as R
 from pyrdmnet.broker import BrokerConfig, RdmnetBroker
 from pyrdmnet.controller import RdmNackError, RdmTimeoutError, WriteLockError, WritePolicy
-from pyrdmnet.llrp import (BROADCAST_CID, ComponentResponder, LlrpManager, LlrpNetwork, LlrpTarget, DiscoveredTarget,
+from pyrdmnet.llrp import (BROADCAST_CID, ComponentResponder, DiscoveredTarget, LlrpManager, LlrpNetwork, LlrpTarget,
+                           RdmNotAppliedError,
                            ProbeRequest, ProbeReply, build_llrp, build_probe_request, build_probe_reply,
                            interface_index, read_llrp, read_probe_request, read_probe_reply, read_rdm_cmd)
 from pyrdmnet.rdm import RdmMessage, Uid
@@ -260,6 +261,53 @@ class TestMultipleTargets(LlrpTest):
         self.assertIn((Uid(0, 0), Uid(0x7FFF, 0xFFFFFFFF)), subranges)
         self.assertIn((Uid(0x8000, 0), Uid(0xFFFF, 0xFFFFFFFF)), subranges)
         self.assertTrue(all(len(a.known) <= 3 for a in sent))
+
+
+class TestNotApplied(LlrpTest):
+    """Devices that acknowledge a SET but do not apply it (seen: LSS MasterPort 2 firmware 2.13), or apply it late."""
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.t, self.r = await self.add_target(Uid(0x7FF0, 0x51), scope="wronn")
+        (self.z,) = await self.m.discover()
+        self.m.write_enabled = True
+        self.m.readback_wait_s = 0.5
+
+    def ignore_sets(self, delay_s=None):
+        original = self.r.__call__
+
+        def responder(a):
+            if a.command_class != C.CC_SET:
+                return original(a)
+            if delay_s is not None:  # apply later, like a device restarting its network part
+                asyncio.get_running_loop().call_later(delay_s, original, a)
+            return a.response(C.RESPONSE_ACK)
+        self.t.responder = responder
+
+    async def test_acknowledged_but_not_applied(self):
+        self.ignore_sets()
+        with self.assertRaises(RdmNotAppliedError) as ctx:
+            await self.m.set_scope(self.z, "default")
+        self.assertIn("did not apply", str(ctx.exception))
+        self.assertIn("'wronn'", ctx.exception.read_back)
+        self.assertEqual(self.m.protocol[-1]["new"], ("wronn", None))  # the log shows what the device really has
+
+    async def test_applied_with_delay(self):
+        self.ignore_sets(delay_s=0.3)
+        self.m.readback_wait_s = 3
+        old, new = await self.m.set_scope(self.z, "default")
+        self.assertEqual((old.scope, new.scope), ("wronn", "default"))
+
+    async def test_search_domain_final_dot(self):
+        original = self.r.__call__
+
+        def without_dot(a):  # stores the domain without the final dot
+            if a.command_class == C.CC_SET and a.pid == C.PID_SEARCH_DOMAIN:
+                a = RdmMessage(a.dest, a.source, a.transaction, a.port_or_response_type, a.command_class, a.pid,
+                               a.data.rstrip(b"."))
+            return original(a)
+        self.t.responder = without_dot
+        self.assertEqual(await self.m.set_search_domain(self.z, "studio."), ("local.", "studio"))
 
 
 @unittest.skipUnless(IPV6, "IPv6 loopback (::1) not available")
